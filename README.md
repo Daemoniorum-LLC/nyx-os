@@ -1,5 +1,3 @@
----
-
 ## ✨ One Framework to rule them all, One Framework to define them, One Framework to guard them all and in the database bind them.
 
 > *In pipelines hot with compile and retry,*
@@ -26,8 +24,6 @@
 > *Context enfolding the needs of them all;*
 > *Not to command, but to focus and guide—*
 > *Persona, the circle where insights reside.*
-
----
 
 # Persona Framework — Domain-specific AI chat agents for WrenchML (and friends)
 
