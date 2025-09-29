@@ -1,5 +1,3 @@
-Here’s an updated README that folds in all the new pieces: the **PostgreSQL-first schema**, **idempotent seed scripts (V001/V002)**, the **AI Catalog & Routing** layer (providers/credentials/integrations/routing), the **Supervisor + Guardrails + Deterministic Verifier** safety pipeline, and the **Admin UI starter**. I also aligned the migration examples to the *current* schema (no H2, no old `ai_model` table, no `persona_integration_fallback` table).
-
 ---
 
 ## ✨ One Framework to rule them all, One Framework to define them, One Framework to guard them all and in the database bind them.
