@@ -323,7 +323,7 @@ spring:
 
 ## License
 
-© 2025 LightspeedDMS. All rights reserved. (Update with your actual license.)
+© 2025 LightspeedDMS. All rights reserved. 
 
 ---
 
