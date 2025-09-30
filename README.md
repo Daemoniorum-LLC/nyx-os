@@ -1,30 +1,3 @@
-## ✨ One Framework to rule them all, One Framework to define them, One Framework to guard them all and in the database bind them.
-
-> *In pipelines hot with compile and retry,*
-> *A framework was forged while the logs rolled by.*
-> *Voices of work became facets of mind—*
-> *Personas assembled, each role well-defined.*
->
-> *Technician’s whisper: “Diagnose, repair.”*
-> *Service Writer’s cadence: “Schedule with care.”*
-> *Inventory counts in meticulous rows;*
-> *Sales charts shimmer with likely-to-close.*
->
-> *Marketing hums through campaigns that sing,*
-> *Management measures the cost of each thing;*
-> *Accounting tallies the coin and the time,*
-> *Keeping the ledger in balance and rhyme.*
->
-> *Prompts are the runes, Guardrails the ward,*
-> *NLP-to-SQL a translating sword;*
-> *Adapters on watch—Bedrock, SageMaker, S3—*
-> *All wired for counsel, all ready to see.*
->
-> *One framework of voices, harmonized calls,*
-> *Context enfolding the needs of them all;*
-> *Not to command, but to focus and guide—*
-> *Persona, the circle where insights reside.*
-
 # Persona Framework — Domain-specific AI chat agents for WrenchML (and friends)
 
 *A lightweight, domain-oriented chat-agent framework for Spring Boot apps.*
