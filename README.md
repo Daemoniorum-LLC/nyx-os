@@ -51,8 +51,8 @@ No module may introduce `core → persistence` (avoid build cycles).
 
 ## Requirements
 
-* **Java 17+**
-* **Gradle 8.10+**
+* **Java 21+**
+* **Gradle 8.13+**
 * **PostgreSQL 13+** (no H2)
 * AWS credentials (if you use AWS adapters)
 

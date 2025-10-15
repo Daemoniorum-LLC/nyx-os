@@ -6,7 +6,7 @@ persona-framework/persona-admin-ui/node_modules/*
 /spring-persona/
 /temp/
 /temp-ui/
-
+.intellijPlatform/
 
 # Gradle
 .gradle/
