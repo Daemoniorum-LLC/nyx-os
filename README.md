@@ -91,8 +91,8 @@ Spring config:
 spring:
   datasource:
     url: jdbc:postgresql://172.17.0.1:5432/persona
-    username: persona
-    password: persona
+    username: postgres
+    password: 
   jpa:
     hibernate:
       ddl-auto: validate
