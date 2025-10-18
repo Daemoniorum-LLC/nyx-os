@@ -29,3 +29,4 @@ logs/
 /temp
 /spring-persona
 /build/
+persona-demo/.env
