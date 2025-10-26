@@ -88,6 +88,7 @@ persona-framework/
 
 - **Autonomous Agents:** Multi-step task planning and execution with 15+ tools
 - **Multi-Provider AI:** AWS Bedrock, Anthropic, OpenAI support
+- **Multi-Project Workspaces:** Orchestrated build/deploy/test for multiple projects
 - **RAG Integration:** S3, URL, database, and vector retrieval
 - **IntelliJ Plugin:** IDE integration for code assistance
 - **Database-Driven Routing:** Dynamic AI provider and model selection
