@@ -76,3 +76,4 @@ docs/developer/lilith/ide-starter*/Cargo.lock
 # Test artifacts
 test-results/
 test-file.txt
+tmp/hsperfdata_root/
