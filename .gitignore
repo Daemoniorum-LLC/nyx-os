@@ -52,3 +52,24 @@ persona-admin-ui/.eslintcache
 # Ignore root-level test directories created accidentally
 /src/
 /test/
+
+# Autonomous development logs and artifacts
+autonomous-logs/
+*.pid
+keepalive.log
+hydra-keepalive.log
+
+# Separate project directories (have own repos)
+# These are independent projects with their own .git directories
+bael/
+mammon/
+
+# Grimoire IDE Starter variants (developer workspace)
+# Keep these tracked for now but ignore build artifacts
+docs/developer/lilith/grimoire*/target/
+docs/developer/lilith/grimoire*/Cargo.lock
+docs/developer/lilith/ide-starter*/target/
+
+# Test artifacts
+test-results/
+test-file.txt
