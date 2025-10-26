@@ -57,21 +57,32 @@ cp .env.example .env
 
 ## Project Structure
 
+This project uses a **multi-repository architecture** where core framework modules are in this repo, while major applications live in separate repositories:
+
+**Main Repository** (this repo):
 ```
 persona-framework/
 ├── persona-core/          # Domain model (framework-agnostic)
-├── persona-persistence/   # JPA + Flyway migrations
 ├── persona-api/           # AI client interfaces
 ├── persona-aws/           # AWS Bedrock implementation
 ├── persona-anthropic/     # Anthropic API implementation
 ├── persona-openai/        # OpenAI API implementation
 ├── persona-agent/         # Autonomous agent framework
+├── persona-mcp/           # Model Context Protocol integration
+├── persona-sandbox/       # Sandboxed execution environment
 ├── persona-autoconfigure/ # Spring Boot auto-config
-├── persona-rest/          # REST API controllers
-├── persona-admin-ui/      # React frontend
-├── persona-intellij-plugin/ # IntelliJ IDEA plugin
-└── hydra/                 # Main Spring Boot app
+└── persona-rest/          # REST API controllers
 ```
+
+**External Repositories** (clone locally for development):
+```
+├── mammon/     → github.com/LightspeedDMS/mammon (JPA + Flyway migrations)
+├── hydra/      → github.com/LightspeedDMS/hydra (main Spring Boot application)
+├── paimon/     → github.com/LightspeedDMS/paimon (IntelliJ IDEA plugin)
+└── bael/       → (separate repo) (React admin UI)
+```
+
+**Build Setup:** For full project builds, clone external repos into their respective directories. See `settings.gradle.kts` for configuration details.
 
 ## Key Features
 
@@ -223,14 +234,19 @@ cd persona-admin-ui
 npm test
 ```
 
-## IntelliJ Plugin
+## IntelliJ Plugin (Paimon)
+
+Paimon is now maintained in a separate repository. See: https://github.com/LightspeedDMS/paimon
 
 ```bash
+# Clone paimon locally (if building full project)
+git clone git@github.com:LightspeedDMS/paimon.git
+
 # Build plugin
-./gradlew :persona-intellij-plugin:buildPlugin
+./gradlew :paimon:buildPlugin
 
 # Run in test IDE
-./gradlew :persona-intellij-plugin:runIde
+./gradlew :paimon:runIde
 ```
 
 ## Troubleshooting

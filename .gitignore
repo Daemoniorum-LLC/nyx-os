@@ -71,6 +71,7 @@ paimon/
 docs/developer/lilith/grimoire*/target/
 docs/developer/lilith/grimoire*/Cargo.lock
 docs/developer/lilith/ide-starter*/target/
+docs/developer/lilith/ide-starter*/Cargo.lock
 
 # Test artifacts
 test-results/
