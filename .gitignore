@@ -63,6 +63,8 @@ hydra-keepalive.log
 # These are independent projects with their own .git directories
 bael/
 mammon/
+hydra/
+paimon/
 
 # Grimoire IDE Starter variants (developer workspace)
 # Keep these tracked for now but ignore build artifacts
