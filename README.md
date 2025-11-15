@@ -742,7 +742,7 @@ cd bael && npm run dev
 
 ## License
 
-© 2025 LightSpeed DMS. All rights reserved.
+© 2025 Daemoniorum, LLC All rights reserved.
 
 ---
 
