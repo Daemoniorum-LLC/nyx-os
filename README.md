@@ -770,7 +770,7 @@ cd bael && npm run dev
 
 ## License
 
-© 2025 Daemoniorum, LLC All rights reserved.
+© 2025 Daemoniorum, Inc. All rights reserved.
 
 ---
 
@@ -780,6 +780,13 @@ cd bael && npm run dev
 - **Discussions**: [GitHub Discussions](https://github.com/your-org/persona-framework/discussions)
 - **Documentation**: `docs/` directory
 - **API Guide**: `API_USAGE_GUIDE.md`
+
+## Contact
+
+**Founder & Lead Developer:** Lilith Crook
+**Email:** [lilith@daemoniorum.com](mailto:lilith@daemoniorum.com)
+
+For business inquiries, technical support, or collaboration opportunities, please reach out directly.
 
 ---
 
@@ -791,4 +798,5 @@ cd bael && npm run dev
 
 ---
 
-**Built with** ❤️ **by the Persona Framework team**
+**Built with** ❤️ **by Lilith Crook and the Persona Framework team**
+**Daemoniorum, Inc. - Intelligence Unleashed** ⚔️
