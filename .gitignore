@@ -8,9 +8,10 @@ persona-framework/persona-admin-ui/node_modules/*
 /temp-ui/
 .intellijPlatform/
 
-# Node.js (root level)
+# Node.js
 /node_modules/
 /package-lock.json
+**/node_modules/
 
 # PDF generation (keep HTML, ignore PDF)
 BUSINESS_PLAN.pdf
