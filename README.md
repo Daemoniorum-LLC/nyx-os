@@ -3,14 +3,33 @@
 Autonomous agent platform built with Kotlin/Spring Boot, React, and IntelliJ tooling. The repo hosts the core runtime, REST API, admin UI, IDE plugin, and a collection of verticalized services (art generation and CNC ERP microservices).
 
 ## What’s in the repo
+### Core applications
 - **Leviathan** – primary Spring Boot backend with agent orchestration, REST API, tool registry, and integrations (Ollama/AWS/Anthropic/OpenAI). See `leviathan/README.md`.
 - **Bael** – React + TypeScript admin UI that talks to Leviathan. See `bael/README.md`.
 - **Hydra** – Spring Boot gateway for legacy integrations. See `hydra/README.md`.
 - **Paimon** – IntelliJ IDEA plugin for in-editor agent workflows. See `paimon/README.md`.
 - **Art Service** – Spring Boot app for digital painting workflows; also embedded in Leviathan. See `art-service/README.md`.
-- **CNC ERP services** – standalone Spring Boot services for CNC domains (customer, quote, job, schedule, shop-floor, inventory, quality, accounting, analytics, portal, integration-hub, machine-monitor). Each has its own README under its module directory.
+- **Apothecary Service** – herbal chemistry automation workflows. See `apothecary-service/README.md`.
 - **Nexus Standalone** – slim Spring Boot packaging that reuses Leviathan while trimming optional modules. See `nexus-standalone/README.md`.
-- **Libraries** – shared modules: `persona-core`, `persona-api`, provider adapters (`persona-aws`, `persona-anthropic`, `persona-openai`, `persona-ollama`), `persona-agent`, `persona-rest`, `persona-autoconfigure`, `persona-mcp`, `persona-sandbox`, `mammon`, `cnc-common`, and `grimoire`.
+
+### Shared libraries & integrations
+- **Persona Core** – shared DTOs and ports used across the platform. See `persona-core/README.md`.
+- **Persona REST** – consolidated REST surface with Workspace/Nexus/agent controllers. See `persona-rest/README.md`.
+- **Persona Autoconfigure** – Spring Boot auto-configuration for persistence, agents, and observability. See `persona-autoconfigure/README.md`.
+- **Persona API** – Kotlin chat/embedding/NL2SQL client helpers. See `persona-api/README.md`.
+- **Persona AWS** – Bedrock, S3, Secrets Manager, and retrieval helpers. See `persona-aws/README.md`.
+- **Persona MCP** – MCP command protocol glue with auditing/security. See `persona-mcp/README.md`.
+- **Persona Sandbox** – Docker-based sandboxed execution helpers. See `persona-sandbox/README.md`.
+- **CNC Common** – shared DTOs, events, and exception handling for CNC services. See `cnc-common/README.md`.
+
+### CNC vertical microservices
+- **CNC Integration Hub** – secure CAD upload API for the CNC suite. See `cnc-integration-hub/README.md`.
+- **CNC Machine Monitor** – machine telemetry ingestion and query API. See `cnc-machine-monitor/README.md`.
+- **CNC Portal Service** – portal user management API. See `cnc-portal-service/README.md`.
+- **Remaining CNC services** – customer, quote, job, schedule, shop-floor, inventory, quality, accounting, analytics, and other `cnc-*` apps continue to live in their respective folders; look for in-directory READMEs where provided (for example, `cnc-customer-service/README.md`).
+
+### Documentation & knowledge
+- **Grimoire** – prompt/persona/tool catalog with `TOOLS.md`, `personas/`, `prompts/`, and `templates/`. See `grimoire/README.md`.
 
 ## Prerequisites
 - Java 21 (Gradle wrapper is provided)
