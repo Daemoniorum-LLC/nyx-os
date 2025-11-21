@@ -1,6 +1,6 @@
 # Project Files
-persona-framework/persona-admin-ui/node_modules/
-persona-framework/persona-admin-ui/node_modules/*
+persona-admin-ui/node_modules/
+persona-admin-ui/node_modules/*
 /kotlin-persona
 /generators
 /spring-persona/
