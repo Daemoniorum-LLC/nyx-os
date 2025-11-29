@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "kernel",
     "libs/libnyx",
+    "libs/libnyx-ipc",
+    "init",
+    "agents/guardian",
 ]
 
 [workspace.package]
