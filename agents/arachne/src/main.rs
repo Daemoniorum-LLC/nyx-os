@@ -1,0 +1,90 @@
+//! # Arachne
+//!
+//! Network agent for DaemonOS.
+//!
+//! ## Features
+//!
+//! - **Firewall**: iptables/nftables rule management
+//! - **DNS**: Local resolver with caching and filtering
+//! - **VPN**: WireGuard integration
+//! - **Network Monitoring**: Connection tracking and bandwidth
+
+mod config;
+mod firewall;
+mod dns;
+mod interfaces;
+mod routing;
+mod monitor;
+mod vpn;
+mod ipc;
+
+use anyhow::Result;
+use clap::Parser;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tracing::{info, error};
+
+/// Arachne - Network agent
+#[derive(Parser, Debug)]
+#[command(name = "arachne", version, about)]
+struct Args {
+    /// Configuration file
+    #[arg(short, long, default_value = "/grimoire/system/arachne.yaml")]
+    config: PathBuf,
+
+    /// Socket path
+    #[arg(short, long, default_value = "/run/arachne/arachne.sock")]
+    socket: PathBuf,
+
+    /// Enable debug logging
+    #[arg(short, long)]
+    debug: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    let log_level = if args.debug { "debug" } else { "info" };
+    tracing_subscriber::fmt()
+        .with_env_filter(log_level)
+        .init();
+
+    info!("Arachne v{} starting", env!("CARGO_PKG_VERSION"));
+
+    let config = config::load_config(&args.config).await?;
+
+    // Initialize components
+    let firewall = Arc::new(firewall::Firewall::new(&config.firewall)?);
+    let dns_resolver = Arc::new(dns::DnsResolver::new(&config.dns).await?);
+    let interfaces = Arc::new(interfaces::InterfaceManager::new()?);
+    let monitor = Arc::new(monitor::NetworkMonitor::new(&config.monitor)?);
+
+    // Start DNS server if enabled
+    if config.dns.server_enabled {
+        let dns_clone = dns_resolver.clone();
+        tokio::spawn(async move {
+            if let Err(e) = dns_clone.run_server().await {
+                error!("DNS server error: {}", e);
+            }
+        });
+    }
+
+    // Start network monitor
+    let monitor_clone = monitor.clone();
+    tokio::spawn(async move {
+        monitor_clone.run().await;
+    });
+
+    // Start IPC server
+    let server = ipc::ArachneServer::new(
+        args.socket,
+        firewall,
+        dns_resolver,
+        interfaces,
+        monitor,
+    );
+
+    info!("Arachne ready");
+    server.run().await
+}
