@@ -7,6 +7,7 @@ members = [
     "init",
     "agents/guardian",
     "agents/archon",
+    "aether",
 ]
 
 [workspace.package]

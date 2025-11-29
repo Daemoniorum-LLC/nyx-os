@@ -1,0 +1,68 @@
+[package]
+name = "aether"
+version = "0.1.0"
+edition = "2024"
+authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
+license = "MIT OR Apache-2.0"
+description = "Aether - Display server and compositor for DaemonOS"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
+
+# Wayland compositor library
+smithay = { version = "0.3", default-features = false, features = [
+    "desktop",
+    "backend_drm",
+    "backend_winit",
+    "backend_session_libseat",
+    "backend_udev",
+    "renderer_gl",
+    "renderer_glow",
+    "wayland_frontend",
+    "xwayland",
+] }
+
+# Wayland protocols
+wayland-server = "0.31"
+wayland-protocols = { version = "0.32", features = ["server", "staging"] }
+
+# Graphics
+drm = "0.14"
+drm-ffi = "0.9"
+gbm = { version = "0.17", default-features = false, features = ["drm-support"] }
+# Note: khronos-egl has no 6.1 version, using latest available
+khronos-egl = { version = "6.0", features = ["dynamic"] }
+glow = "0.16"
+
+# Input handling
+input = "0.9"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Utils
+anyhow = "1.0"
+thiserror = "2.0"
+clap = { version = "4.5", features = ["derive"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = "0.4"
+
+# IPC
+libnyx-ipc = { path = "../libs/libnyx-ipc" }
+
+# X11 support
+x11rb = { version = "0.14", optional = true }
+
+[features]
+default = ["xwayland"]
+xwayland = ["x11rb", "smithay/xwayland"]
+
+[build-dependencies]
+wayland-scanner = "0.31"
