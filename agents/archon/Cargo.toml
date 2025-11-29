@@ -1,0 +1,42 @@
+[package]
+name = "archon"
+version = "0.1.0"
+edition = "2024"
+authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
+license = "MIT OR Apache-2.0"
+description = "Archon - Process orchestration agent for DaemonOS"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.42", features = ["full", "process"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# System
+nix = { version = "0.29", features = ["signal", "process", "user", "resource", "sched"] }
+libc = "0.2"
+procfs = "0.17"
+
+# Utils
+anyhow = "1.0"
+thiserror = "2.0"
+clap = { version = "4.5", features = ["derive"] }
+dashmap = "6.1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# IPC
+libnyx-ipc = { path = "../../libs/libnyx-ipc" }
+
+# Cgroups
+cgroups-rs = "0.3"
+
+[features]
+default = []

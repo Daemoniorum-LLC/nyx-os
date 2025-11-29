@@ -6,6 +6,7 @@ members = [
     "libs/libnyx-ipc",
     "init",
     "agents/guardian",
+    "agents/archon",
 ]
 
 [workspace.package]
