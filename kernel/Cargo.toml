@@ -1,0 +1,35 @@
+[package]
+name = "nyx-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+bitflags.workspace = true
+spin.workspace = true
+log.workspace = true
+hashbrown.workspace = true
+heapless.workspace = true
+contracts.workspace = true
+
+# Architecture-specific
+x86_64 = { workspace = true, optional = true }
+aarch64-cpu = { workspace = true, optional = true }
+
+[features]
+default = ["arch-x86_64"]
+arch-x86_64 = ["dep:x86_64"]
+arch-aarch64 = ["dep:aarch64-cpu"]
+
+# AI acceleration
+cuda = []
+metal = []
+npu = []
+
+# Debugging
+time-travel = []
+kasan = []  # Kernel Address Sanitizer

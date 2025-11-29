@@ -1,0 +1,210 @@
+//! Virtual memory manager
+
+use super::{VirtAddr, PhysAddr, PAGE_SIZE};
+use crate::cap::ObjectId;
+use alloc::collections::BTreeMap;
+use bitflags::bitflags;
+
+/// Virtual address space
+pub struct AddressSpace {
+    /// Unique ID
+    pub id: ObjectId,
+    /// Virtual memory areas
+    vmas: BTreeMap<VirtAddr, Vma>,
+    /// Page table root (physical address)
+    page_table_root: PhysAddr,
+}
+
+/// Virtual memory area
+#[derive(Clone, Debug)]
+pub struct Vma {
+    /// Start address
+    pub start: VirtAddr,
+    /// End address (exclusive)
+    pub end: VirtAddr,
+    /// Protection flags
+    pub protection: Protection,
+    /// Backing type
+    pub backing: VmaBacking,
+    /// Flags
+    pub flags: VmaFlags,
+}
+
+bitflags! {
+    /// Memory protection flags
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Protection: u8 {
+        const READ = 1 << 0;
+        const WRITE = 1 << 1;
+        const EXECUTE = 1 << 2;
+        const USER = 1 << 3;
+    }
+}
+
+bitflags! {
+    /// VMA flags
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct VmaFlags: u32 {
+        /// Copy-on-write
+        const COW = 1 << 0;
+        /// Locked in memory
+        const LOCKED = 1 << 1;
+        /// Huge pages
+        const HUGE_PAGES = 1 << 2;
+        /// No dump
+        const NO_DUMP = 1 << 3;
+        /// GPU accessible
+        const GPU_ACCESSIBLE = 1 << 4;
+    }
+}
+
+/// VMA backing type
+#[derive(Clone, Debug)]
+pub enum VmaBacking {
+    /// Anonymous (demand-paged)
+    Anonymous,
+    /// File-backed
+    File { file: ObjectId, offset: u64 },
+    /// Physical memory (MMIO)
+    Physical { phys: PhysAddr },
+    /// Shared memory
+    Shared { region: ObjectId },
+    /// Tensor buffer
+    Tensor { tensor: ObjectId, offset: u64 },
+}
+
+impl AddressSpace {
+    /// Create a new address space
+    pub fn new() -> Self {
+        // Allocate page table root
+        let page_table_root = super::alloc_frame()
+            .expect("Failed to allocate page table root");
+
+        Self {
+            id: ObjectId::new(crate::cap::ObjectType::AddressSpace),
+            vmas: BTreeMap::new(),
+            page_table_root,
+        }
+    }
+
+    /// Map a region
+    pub fn map(
+        &mut self,
+        start: VirtAddr,
+        size: u64,
+        protection: Protection,
+        backing: VmaBacking,
+    ) -> Result<(), VmError> {
+        let end = VirtAddr::new(start.as_u64() + size);
+
+        // Check for overlaps
+        for (_, vma) in self.vmas.range(..end) {
+            if vma.end.as_u64() > start.as_u64() {
+                return Err(VmError::Overlap);
+            }
+        }
+
+        let vma = Vma {
+            start,
+            end,
+            protection,
+            backing,
+            flags: VmaFlags::empty(),
+        };
+
+        self.vmas.insert(start, vma);
+        Ok(())
+    }
+
+    /// Unmap a region
+    pub fn unmap(&mut self, start: VirtAddr, size: u64) -> Result<(), VmError> {
+        let end = start.as_u64() + size;
+
+        // Find and remove overlapping VMAs
+        let to_remove: Vec<_> = self.vmas
+            .range(..VirtAddr::new(end))
+            .filter(|(_, vma)| vma.end.as_u64() > start.as_u64())
+            .map(|(k, _)| *k)
+            .collect();
+
+        for key in to_remove {
+            self.vmas.remove(&key);
+        }
+
+        Ok(())
+    }
+
+    /// Handle page fault
+    pub fn handle_fault(&mut self, addr: VirtAddr, write: bool) -> Result<(), VmError> {
+        // Find VMA containing the address
+        let vma = self.vmas
+            .range(..=addr)
+            .next_back()
+            .filter(|(_, vma)| vma.end.as_u64() > addr.as_u64())
+            .map(|(_, vma)| vma);
+
+        let vma = match vma {
+            Some(v) => v,
+            None => return Err(VmError::NotMapped),
+        };
+
+        // Check permissions
+        if write && !vma.protection.contains(Protection::WRITE) {
+            return Err(VmError::PermissionDenied);
+        }
+
+        // Allocate and map page based on backing
+        match &vma.backing {
+            VmaBacking::Anonymous => {
+                let frame = super::alloc_frame().ok_or(VmError::OutOfMemory)?;
+                self.map_page(addr, frame, vma.protection)?;
+            }
+            VmaBacking::Physical { phys } => {
+                let offset = addr.as_u64() - vma.start.as_u64();
+                let phys_addr = PhysAddr::new(phys.as_u64() + offset);
+                self.map_page(addr, phys_addr, vma.protection)?;
+            }
+            _ => {
+                // TODO: Handle other backing types
+                return Err(VmError::NotImplemented);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Map a single page
+    fn map_page(
+        &mut self,
+        _virt: VirtAddr,
+        _phys: PhysAddr,
+        _prot: Protection,
+    ) -> Result<(), VmError> {
+        // TODO: Actual page table manipulation
+        Ok(())
+    }
+}
+
+impl Default for AddressSpace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Virtual memory subsystem interface
+pub struct VirtualMemory;
+
+/// VM errors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VmError {
+    /// Region overlaps with existing mapping
+    Overlap,
+    /// Address not mapped
+    NotMapped,
+    /// Permission denied
+    PermissionDenied,
+    /// Out of memory
+    OutOfMemory,
+    /// Not implemented
+    NotImplemented,
+}

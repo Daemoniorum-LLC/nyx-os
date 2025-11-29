@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "kernel",
+    "libs/libnyx",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/daemoniorum/nyx"
+
+[workspace.dependencies]
+# Core
+bitflags = "2.9"
+spin = "0.10"
+log = "0.4"
+
+# Data structures
+hashbrown = "0.15"
+heapless = "0.8"
+
+# Architecture support
+x86_64 = "0.15"
+aarch64-cpu = "9.4"
+
+# Verification
+contracts = "0.6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+panic = "abort"
