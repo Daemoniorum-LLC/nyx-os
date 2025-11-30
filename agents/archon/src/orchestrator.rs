@@ -41,14 +41,17 @@ impl Orchestrator {
         guardian_socket: PathBuf,
     ) -> Result<Self> {
         // Try to connect to Guardian
-        let guardian_client = match GuardianClient::with_socket(&guardian_socket).connect_internal().await {
-            Ok(client) => {
-                info!("Connected to Guardian");
-                Some(client)
-            }
-            Err(e) => {
-                warn!("Failed to connect to Guardian: {} - continuing without security checks", e);
-                None
+        let guardian_client = {
+            let mut client = GuardianClient::with_socket(&guardian_socket);
+            match client.connect_internal().await {
+                Ok(()) => {
+                    info!("Connected to Guardian");
+                    Some(client)
+                }
+                Err(e) => {
+                    warn!("Failed to connect to Guardian: {} - continuing without security checks", e);
+                    None
+                }
             }
         };
 
@@ -102,9 +105,10 @@ impl Orchestrator {
 
         // Try to reconnect if not connected
         if client_guard.is_none() {
-            match GuardianClient::with_socket(&self.guardian_socket).connect_internal().await {
-                Ok(client) => {
-                    *client_guard = Some(client);
+            let mut new_client = GuardianClient::with_socket(&self.guardian_socket);
+            match new_client.connect_internal().await {
+                Ok(()) => {
+                    *client_guard = Some(new_client);
                 }
                 Err(e) => {
                     warn!("Cannot connect to Guardian: {} - allowing by default", e);

@@ -12,6 +12,7 @@ mod collector;
 mod storage;
 mod query;
 mod ipc;
+mod state;
 
 use anyhow::Result;
 use clap::Parser;
@@ -21,8 +22,9 @@ use tracing::{info, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::journal::Journal;
-use crate::collector::{SyslogCollector, KernelCollector, StdoutCollector};
+use crate::collector::{SyslogCollector, KernelCollector};
 use crate::ipc::ScribeServer;
+use crate::state::{ScribeState, ScribeConfig};
 
 #[derive(Parser)]
 #[command(name = "scribed")]
@@ -47,19 +49,6 @@ struct Args {
     /// Retention days
     #[arg(long, default_value = "30")]
     retention_days: u32,
-}
-
-/// Daemon state
-pub struct ScribeState {
-    journal: Journal,
-    config: ScribeConfig,
-}
-
-#[derive(Clone)]
-pub struct ScribeConfig {
-    pub journal_dir: String,
-    pub max_file_size: u64,
-    pub retention_days: u32,
 }
 
 #[tokio::main]

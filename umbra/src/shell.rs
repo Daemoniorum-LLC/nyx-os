@@ -316,7 +316,7 @@ impl Shell {
                         for line in contents.lines() {
                             let line = line.trim();
                             if !line.is_empty() && !line.starts_with('#') {
-                                self.execute(line, event_tx.clone()).await?;
+                                Box::pin(self.execute(line, event_tx.clone())).await?;
                             }
                         }
                     }

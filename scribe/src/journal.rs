@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use tracing::{info, debug};

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "kernel",
+    # "kernel",  # Excluded - requires nightly Rust features for bare-metal
     "libs/libnyx",
     "libs/libnyx-ipc",
     "libs/libnyx-platform",
@@ -33,7 +33,7 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/daemoniorum/nyx"
@@ -69,7 +69,7 @@ thiserror = "2.0"
 
 # Logging/tracing
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Utilities
 dirs = "5.0"
@@ -82,6 +82,8 @@ rand = "0.8"
 notify = "7.0"
 crossterm = "0.28"
 libc = "0.2"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+futures = "0.3"
 
 [profile.release]
 opt-level = 3

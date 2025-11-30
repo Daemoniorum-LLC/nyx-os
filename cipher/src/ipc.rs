@@ -9,7 +9,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 use tracing::{info, error, debug};
 
-use crate::CipherState;
+use crate::state::CipherState;
 use crate::crypto::Secret;
 use crate::keyring::SearchAttributes;
 

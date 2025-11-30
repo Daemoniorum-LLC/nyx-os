@@ -228,7 +228,7 @@ impl SearchEngine {
 }
 
 /// Quick filter for initial candidate selection
-pub fn quick_filter(apps: &[IndexedApp], query: &str) -> Vec<&IndexedApp> {
+pub fn quick_filter<'a>(apps: &'a [IndexedApp], query: &str) -> Vec<&'a IndexedApp> {
     let query_lower = query.to_lowercase();
     let first_char = query_lower.chars().next();
 

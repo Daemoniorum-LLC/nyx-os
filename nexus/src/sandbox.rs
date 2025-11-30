@@ -90,7 +90,7 @@ impl BuildSandbox {
 
         // Apply patches
         for patch in &def.source.patches {
-            let patch_path = Path::new(path).parent().unwrap().join(patch);
+            let patch_path = PathBuf::from(patch);
             self.apply_patch(&source_dir, &patch_path).await?;
         }
 

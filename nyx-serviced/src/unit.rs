@@ -399,10 +399,12 @@ impl UnitRegistry {
 
     /// Get a mutable reference to a unit
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Unit> {
-        let real_name = self.aliases.get(name).cloned();
-        real_name.as_ref()
-            .and_then(|n| self.units.get_mut(n))
-            .or_else(|| self.units.get_mut(name))
+        // First check if it's an alias
+        if let Some(real_name) = self.aliases.get(name).cloned() {
+            return self.units.get_mut(&real_name);
+        }
+        // Otherwise check direct name
+        self.units.get_mut(name)
     }
 
     /// Register a unit
