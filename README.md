@@ -1,89 +1,230 @@
-# Persona Framework
+# DaemonOS (Nyx)
 
-Autonomous agent platform built with Kotlin/Spring Boot, React, and IntelliJ tooling. The repo hosts the core runtime, REST API, admin UI, IDE plugin, and a collection of verticalized services (art generation and Vulcan microservices).
+A modern, Rust-based operating system built on the Nyx microkernel architecture. Part of the Persona Framework.
 
-## What’s in the repo
-### Core applications
-- **Leviathan** – primary Spring Boot backend with agent orchestration, REST API, tool registry, and integrations (Ollama/AWS/Anthropic/OpenAI). See `leviathan/README.md`.
-- **Bael** – React + TypeScript admin UI that talks to Leviathan. See `bael/README.md`.
-- **Hydra** – Spring Boot gateway for legacy integrations. See `hydra/README.md`.
-- **Paimon** – IntelliJ IDEA plugin for in-editor agent workflows. See `paimon/README.md`.
-- **Art Service** – Spring Boot app for digital painting workflows; also embedded in Leviathan. See `art-service/README.md`.
-- **Apothecary Service** – herbal chemistry automation workflows. See `apothecary-service/README.md`.
-- **Nexus Standalone** – slim Spring Boot packaging that reuses Leviathan while trimming optional modules. See `nexus-standalone/README.md`.
+## Architecture Overview
 
-### Shared libraries & integrations
-- **Persona Core** – shared DTOs and ports used across the platform. See `persona-core/README.md`.
-- **Persona REST** – consolidated REST surface with Workspace/Nexus/agent controllers. See `persona-rest/README.md`.
-- **Persona Autoconfigure** – Spring Boot auto-configuration for persistence, agents, and observability. See `persona-autoconfigure/README.md`.
-- **Persona API** – Kotlin chat/embedding/NL2SQL client helpers. See `persona-api/README.md`.
-- **Persona AWS** – Bedrock, S3, Secrets Manager, and retrieval helpers. See `persona-aws/README.md`.
-- **Persona MCP** – MCP command protocol glue with auditing/security. See `persona-mcp/README.md`.
-- **Persona Sandbox** – Docker-based sandboxed execution helpers. See `persona-sandbox/README.md`.
-- **CNC Common** – shared DTOs, events, and exception handling for CNC services. See `cnc-common/README.md`.
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        User Applications                         │
+├─────────────────────────────────────────────────────────────────┤
+│  Summoner   │   Herald    │    Umbra    │      Aether           │
+│  (launcher) │ (notifier)  │ (compositor)│  (display server)     │
+├─────────────────────────────────────────────────────────────────┤
+│  Nexus   │ Wraith  │ Cipher │ Scribe │ Vesper │ Phantom │Spectre│
+│  (pkg)   │ (net)   │ (keys) │ (logs) │ (audio)│ (udev)  │(login)│
+├─────────────────────────────────────────────────────────────────┤
+│  Guardian  │   Archon    │   Arachne   │      Grimoire          │
+│ (security) │ (processes) │ (networking)│   (config mgmt)        │
+├─────────────────────────────────────────────────────────────────┤
+│              nyx-serviced (service manager)                      │
+├─────────────────────────────────────────────────────────────────┤
+│                    nyx-init (PID 1)                              │
+├─────────────────────────────────────────────────────────────────┤
+│   libnyx   │   libnyx-ipc   │   libnyx-platform (WSL compat)    │
+├─────────────────────────────────────────────────────────────────┤
+│                      Nyx Microkernel                             │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-### CNC vertical microservices
-- **CNC Integration Hub** – secure CAD upload API for the CNC suite. See `cnc-integration-hub/README.md`.
-- **CNC Machine Monitor** – machine telemetry ingestion and query API. See `cnc-machine-monitor/README.md`.
-- **CNC Portal Service** – portal user management API. See `cnc-portal-service/README.md`.
-- **Remaining CNC services** – customer, quote, job, schedule, shop-floor, inventory, quality, accounting, analytics, and other `cnc-*` apps continue to live in their respective folders; look for in-directory READMEs where provided (for example, `cnc-customer-service/README.md`).
+## Components
 
-### Documentation & knowledge
-- **Grimoire** – prompt/persona/tool catalog with `TOOLS.md`, `personas/`, `prompts/`, and `templates/`. See `grimoire/README.md`.
+### Core System
 
-## Prerequisites
-- Java 21 (Gradle wrapper is provided)
-- Node.js 18+ (for Bael)
-- PostgreSQL 13+ (used by Leviathan and the Spring Boot services)
-- Optional: Ollama running at `http://localhost:11434` for local ML, Kafka for CNC event streaming, Redis/Elasticsearch if you enable those integrations
+| Component | Binary | Description |
+|-----------|--------|-------------|
+| **kernel** | - | Nyx microkernel with capability-based security |
+| **init** | `nyx-init` | PID 1, system bootstrap, service supervision |
+| **nyx-serviced** | `nyx-serviced` | Service manager with dependency resolution, socket activation |
+| **spectre** | `spectred` | Session/login manager with PAM, multi-seat support |
+| **phantom** | `phantomd` | Device manager (udev replacement), netlink monitoring |
+| **nexus** | `nexus`, `nexusd` | Package manager with content-addressable store |
+| **wraith** | `wraithd`, `wraithctl` | Network manager with DHCP, WiFi, profiles |
+| **cipher** | `cipherd`, `cipher` | Secrets daemon with ChaCha20-Poly1305 encryption |
+| **scribe** | `scribed`, `scribectl` | Logging daemon with structured JSON journal |
+| **vesper** | `vesperd` | Audio daemon with ALSA, per-app mixing, Bluetooth |
 
-## Quick start (Leviathan + Bael)
-1. **Configure environment** (example):
-   ```bash
-   export SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/persona
-   export SPRING_DATASOURCE_USERNAME=postgres
-   export SPRING_DATASOURCE_PASSWORD=postgres
-   export PERSONA_AI_OLLAMA_ENABLED=true
-   export PERSONA_AI_OLLAMA_BASE_URL=http://localhost:11434
-   # Optional workspace roots
-   export WORKSPACE_BASE_PATH=/home/lilith/development/projects/persona-framework/workspace
-   export WORKSPACE_PROJECTS_PATH=/home/lilith/development/projects
-   ```
-   Additional knobs live in `leviathan/src/main/resources/application.yaml`.
-2. **Run Leviathan** (default port 8080):
-   ```bash
-   ./gradlew :leviathan:bootRun
-   ```
-3. **Run Bael** (default Vite dev server port 5173):
-   ```bash
-   cd bael
-   npm install
-   VITE_API_BASE_URL=http://localhost:8080 npm run dev
-   ```
+### Agents
 
-## Running other applications
-- Hydra: `./gradlew :hydra:bootRun`
-- Paimon (IntelliJ plugin dev): `./gradlew :paimon:runIde`
-- Art Service: `./gradlew :art-service:bootRun`
-- Nexus Standalone: `./gradlew :nexus-standalone:bootRun`
-- Vulcan microservices (one at a time, choose a free port): `./gradlew :cnc-customer-service:bootRun` (repeat for other `cnc-*` services)
+| Agent | Description |
+|-------|-------------|
+| **guardian** | Security policy enforcement, capability management |
+| **archon** | Process orchestration, resource allocation |
+| **arachne** | Network services, connection management |
+| **grimoire** | Configuration management, system state |
 
-## Testing
-- Backend/agents/services: `./gradlew test`
-- Bael unit tests: `cd bael && npm test`
-- Bael e2e: `cd bael && npm run e2e`
-- Paimon plugin tests: `./gradlew :paimon:test`
+### Desktop
 
-## Docker/Jib
-- Build Leviathan image: `./gradlew :leviathan:jibDockerBuild`
-- Build Hydra image: `./gradlew :hydra:jibDockerBuild`
-  (uses Amazon Corretto 21 base image and respects gradle properties `containerName`, `imageTag`, etc.)
+| Component | Binary | Description |
+|-----------|--------|-------------|
+| **aether** | `aether` | Wayland display server |
+| **umbra** | `umbra` | Compositor with animations, effects |
+| **summoner** | `summoner` | Application launcher, desktop integration |
+| **herald** | `herald` | Notification daemon |
 
-## Documentation
-- API usage: `docs/API_USAGE_GUIDE.md`
-- Developer index: `docs/developer/INDEX.md`
-- Additional roadmaps and reports: `docs/` (numerous session summaries and audits)
-- Application-specific guides: see the per-application READMEs referenced above.
+### Libraries
 
-## Support
-For questions or issues, contact **Lilith Crook** (`lilith@daemoniorum.com`) or open a ticket in this repository.
+| Library | Description |
+|---------|-------------|
+| **libnyx** | Core system library, syscall wrappers |
+| **libnyx-ipc** | IPC primitives, message passing |
+| **libnyx-platform** | Platform abstraction, WSL compatibility layer |
+
+## Building
+
+```bash
+cd nyx
+cargo build --release
+```
+
+### Build Individual Components
+
+```bash
+cargo build -p nexus --release
+cargo build -p wraith --release
+cargo build -p scribe --release
+```
+
+## Configuration
+
+### Service Units
+
+Service units are defined in YAML format in `/etc/nyx/services/`:
+
+```yaml
+name: example
+description: Example service
+type: simple
+
+exec:
+  start: /usr/bin/example-daemon
+
+dependencies:
+  requires:
+    - network.target
+  after:
+    - network.target
+
+resources:
+  memory_max: 512M
+  cpu_weight: 100
+```
+
+### Network Profiles
+
+Network profiles in `/etc/wraith/profiles/`:
+
+```toml
+name = "Home WiFi"
+interface_match = "wl*"
+
+[config]
+type = "Dhcp"
+
+[options]
+metered = false
+```
+
+### Package Repositories
+
+Repository configuration in `/etc/nexus/repos.d/`:
+
+```toml
+name = "nyx-core"
+url = "https://packages.daemoniorum.com/nyx/core"
+enabled = true
+priority = 100
+```
+
+## Key Features
+
+### Content-Addressable Package Store
+
+Nexus uses a Nix-inspired content-addressable store:
+- Packages stored by hash: `/nyx/store/{hash}-{name}-{version}`
+- Atomic upgrades via generations
+- Rollback support
+- Reproducible builds
+
+### Structured Logging
+
+Scribe provides structured JSON logging:
+- Binary journal format for efficiency
+- Log rotation with compression
+- Query by time, priority, identifier
+- Kernel message collection
+
+### Secure Secrets Storage
+
+Cipher provides encrypted secrets:
+- ChaCha20-Poly1305 encryption
+- Argon2id key derivation
+- Session-based access control
+- Memory-safe handling (zeroize)
+
+### WSL Compatibility
+
+libnyx-platform provides transparent WSL support:
+- Automatic environment detection
+- Graceful degradation for unavailable features
+- Native performance where possible
+
+## Directory Structure
+
+```
+nyx/
+├── kernel/           # Microkernel
+├── init/             # PID 1
+├── nyx-serviced/     # Service manager
+├── spectre/          # Login manager
+├── phantom/          # Device manager
+├── nexus/            # Package manager
+├── wraith/           # Network manager
+├── cipher/           # Secrets daemon
+├── scribe/           # Logging daemon
+├── vesper/           # Audio daemon
+├── aether/           # Display server
+├── umbra/            # Compositor
+├── summoner/         # App launcher
+├── herald/           # Notifications
+├── agents/
+│   ├── guardian/     # Security
+│   ├── archon/       # Process orchestration
+│   ├── arachne/      # Networking
+│   └── grimoire/     # Configuration
+└── libs/
+    ├── libnyx/       # Core library
+    ├── libnyx-ipc/   # IPC library
+    └── libnyx-platform/  # Platform abstraction
+```
+
+## Statistics
+
+- **186 Rust source files**
+- **~48,000 lines of code**
+- **21 workspace members**
+
+## Roadmap
+
+### Planned Components
+
+- **Chronos** - Time/NTP daemon
+- **Slumber** - Power management
+- **Sentinel** - Polkit alternative
+- **Iris** - Bluetooth daemon
+- **Vault** - Disk encryption
+
+### Future Goals
+
+- Bootable ISO generation
+- Graphical installer
+- Tonalpohualli calendar-based authorization integration
+- Container runtime (OCI compatible)
+
+## License
+
+MIT OR Apache-2.0
+
+## Authors
+
+Daemoniorum Engineering <engineering@daemoniorum.com>
