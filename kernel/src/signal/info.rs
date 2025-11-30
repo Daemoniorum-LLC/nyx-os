@@ -255,3 +255,207 @@ impl Default for SigVal {
         SigVal::Int(0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_siginfo_new() {
+        let info = SigInfo::new(Signal::SIGINT);
+        assert_eq!(info.signo, Signal::SIGINT.as_raw());
+        assert_eq!(info.errno, 0);
+        assert!(matches!(info.code, SigCode::User));
+        assert!(info.sender_pid.is_none());
+        assert!(info.addr.is_none());
+    }
+
+    #[test]
+    fn test_siginfo_kernel() {
+        let info = SigInfo::kernel(Signal::SIGSEGV, SigCode::SegvMapErr);
+        assert_eq!(info.signo, Signal::SIGSEGV.as_raw());
+        assert!(matches!(info.code, SigCode::SegvMapErr));
+    }
+
+    #[test]
+    fn test_siginfo_fault_sigsegv() {
+        let addr = 0xDEADBEEFu64;
+        let info = SigInfo::fault(Signal::SIGSEGV, addr);
+        assert_eq!(info.signo, Signal::SIGSEGV.as_raw());
+        assert!(matches!(info.code, SigCode::SegvMapErr));
+        assert_eq!(info.addr, Some(addr));
+    }
+
+    #[test]
+    fn test_siginfo_fault_sigbus() {
+        let addr = 0x1000u64;
+        let info = SigInfo::fault(Signal::SIGBUS, addr);
+        assert!(matches!(info.code, SigCode::BusAddrErr));
+        assert_eq!(info.addr, Some(addr));
+    }
+
+    #[test]
+    fn test_siginfo_fault_sigfpe() {
+        let addr = 0x2000u64;
+        let info = SigInfo::fault(Signal::SIGFPE, addr);
+        assert!(matches!(info.code, SigCode::FpeDivZero));
+    }
+
+    #[test]
+    fn test_siginfo_fault_sigill() {
+        let addr = 0x3000u64;
+        let info = SigInfo::fault(Signal::SIGILL, addr);
+        assert!(matches!(info.code, SigCode::IllOp));
+    }
+
+    #[test]
+    fn test_siginfo_fault_other() {
+        let addr = 0x4000u64;
+        let info = SigInfo::fault(Signal::SIGTERM, addr);
+        assert!(matches!(info.code, SigCode::Kernel));
+    }
+
+    #[test]
+    fn test_siginfo_with_sender() {
+        let pid = ProcessId::new();
+        let info = SigInfo::new(Signal::SIGTERM).with_sender(Some(pid));
+        assert_eq!(info.sender_pid, Some(pid));
+        assert!(matches!(info.code, SigCode::User));
+    }
+
+    #[test]
+    fn test_siginfo_with_value() {
+        let info = SigInfo::new(Signal::SIGTERM).with_value(42);
+        assert!(matches!(info.value, SigVal::Int(42)));
+        assert!(matches!(info.code, SigCode::Queue));
+    }
+
+    #[test]
+    fn test_siginfo_with_addr() {
+        let addr = 0xCAFEBABEu64;
+        let info = SigInfo::new(Signal::SIGSEGV).with_addr(addr);
+        assert_eq!(info.addr, Some(addr));
+    }
+
+    #[test]
+    fn test_siginfo_with_errno() {
+        let info = SigInfo::new(Signal::SIGTERM).with_errno(22);
+        assert_eq!(info.errno, 22);
+    }
+
+    #[test]
+    fn test_siginfo_signal() {
+        let info = SigInfo::new(Signal::SIGKILL);
+        let sig = info.signal();
+        assert!(sig.is_some());
+        assert_eq!(sig.unwrap(), Signal::SIGKILL);
+    }
+
+    #[test]
+    fn test_siginfo_builder_chain() {
+        let pid = ProcessId::new();
+        let info = SigInfo::new(Signal::SIGUSR1)
+            .with_sender(Some(pid))
+            .with_errno(5)
+            .with_addr(0x1000);
+
+        assert_eq!(info.signo, Signal::SIGUSR1.as_raw());
+        assert_eq!(info.sender_pid, Some(pid));
+        assert_eq!(info.errno, 5);
+        assert_eq!(info.addr, Some(0x1000));
+    }
+
+    #[test]
+    fn test_sigcode_default() {
+        let code = SigCode::default();
+        assert!(matches!(code, SigCode::User));
+    }
+
+    #[test]
+    fn test_sigcode_posix_value_negative() {
+        assert_eq!(SigCode::Queue.posix_value(), -1);
+        assert_eq!(SigCode::Timer.posix_value(), -2);
+        assert_eq!(SigCode::MesgQ.posix_value(), -3);
+        assert_eq!(SigCode::AsyncIO.posix_value(), -4);
+        assert_eq!(SigCode::SigIO.posix_value(), -5);
+    }
+
+    #[test]
+    fn test_sigcode_posix_value_basic() {
+        assert_eq!(SigCode::User.posix_value(), 0);
+        assert_eq!(SigCode::Kernel.posix_value(), 0x80);
+    }
+
+    #[test]
+    fn test_sigcode_posix_value_sigchld() {
+        assert_eq!(SigCode::ChldExited.posix_value(), 1);
+        assert_eq!(SigCode::ChldKilled.posix_value(), 2);
+        assert_eq!(SigCode::ChldDumped.posix_value(), 3);
+        assert_eq!(SigCode::ChldTrapped.posix_value(), 4);
+        assert_eq!(SigCode::ChldStopped.posix_value(), 5);
+        assert_eq!(SigCode::ChldContinued.posix_value(), 6);
+    }
+
+    #[test]
+    fn test_sigcode_posix_value_sigsegv() {
+        assert_eq!(SigCode::SegvMapErr.posix_value(), 1);
+        assert_eq!(SigCode::SegvAccErr.posix_value(), 2);
+    }
+
+    #[test]
+    fn test_sigcode_posix_value_sigbus() {
+        assert_eq!(SigCode::BusAddrErr.posix_value(), 1);
+        assert_eq!(SigCode::BusObjErr.posix_value(), 2);
+        assert_eq!(SigCode::BusMcErr.posix_value(), 3);
+    }
+
+    #[test]
+    fn test_sigcode_posix_value_sigill() {
+        assert_eq!(SigCode::IllOp.posix_value(), 1);
+        assert_eq!(SigCode::IllOperand.posix_value(), 2);
+        assert_eq!(SigCode::IllAddr.posix_value(), 3);
+        assert_eq!(SigCode::IllTrap.posix_value(), 4);
+        assert_eq!(SigCode::IllPriv.posix_value(), 5);
+        assert_eq!(SigCode::IllCoproc.posix_value(), 6);
+    }
+
+    #[test]
+    fn test_sigcode_posix_value_sigfpe() {
+        assert_eq!(SigCode::FpeDivZero.posix_value(), 1);
+        assert_eq!(SigCode::FpeIntOvf.posix_value(), 2);
+        assert_eq!(SigCode::FpeFltDiv.posix_value(), 3);
+        assert_eq!(SigCode::FpeFltOvf.posix_value(), 4);
+    }
+
+    #[test]
+    fn test_sigcode_posix_value_sigtrap() {
+        assert_eq!(SigCode::TrapBrkpt.posix_value(), 1);
+        assert_eq!(SigCode::TrapTrace.posix_value(), 2);
+    }
+
+    #[test]
+    fn test_sigval_int() {
+        let val = SigVal::Int(42);
+        assert_eq!(val.as_int(), 42);
+        assert_eq!(val.as_ptr(), 42);
+    }
+
+    #[test]
+    fn test_sigval_ptr() {
+        let val = SigVal::Ptr(0xDEADBEEF);
+        assert_eq!(val.as_ptr(), 0xDEADBEEF);
+        assert_eq!(val.as_int(), 0xDEADBEEF as i64);
+    }
+
+    #[test]
+    fn test_sigval_default() {
+        let val = SigVal::default();
+        assert!(matches!(val, SigVal::Int(0)));
+    }
+
+    #[test]
+    fn test_sigval_negative() {
+        let val = SigVal::Int(-100);
+        assert_eq!(val.as_int(), -100);
+    }
+}

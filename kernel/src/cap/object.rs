@@ -201,3 +201,223 @@ impl ObjectType {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_object_id_new() {
+        let id1 = ObjectId::new(ObjectType::Process);
+        let id2 = ObjectId::new(ObjectType::Process);
+        assert_ne!(id1, id2); // Each ID should be unique
+    }
+
+    #[test]
+    fn test_object_id_object_type() {
+        let id = ObjectId::new(ObjectType::Thread);
+        assert_eq!(id.object_type(), ObjectType::Thread);
+
+        let id2 = ObjectId::new(ObjectType::Endpoint);
+        assert_eq!(id2.object_type(), ObjectType::Endpoint);
+    }
+
+    #[test]
+    fn test_object_id_from_raw() {
+        let original = ObjectId::new(ObjectType::MemoryRegion);
+        let raw = original.raw();
+        let restored = ObjectId::from_raw(raw);
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_object_id_as_u64() {
+        let id = ObjectId::new(ObjectType::Process);
+        assert_eq!(id.as_u64(), id.raw());
+    }
+
+    #[test]
+    fn test_object_id_ordering() {
+        let id1 = ObjectId::new(ObjectType::Process);
+        let id2 = ObjectId::new(ObjectType::Process);
+        // IDs created later should be greater
+        assert!(id2 > id1);
+    }
+
+    #[test]
+    fn test_object_id_hash() {
+        use std::collections::HashSet;
+
+        let mut set = HashSet::new();
+        let id1 = ObjectId::new(ObjectType::Process);
+        let id2 = ObjectId::new(ObjectType::Process);
+
+        set.insert(id1);
+        set.insert(id2);
+        set.insert(id1); // Duplicate
+
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_object_id_debug() {
+        let id = ObjectId::new(ObjectType::Endpoint);
+        let debug_str = format!("{:?}", id);
+        assert!(debug_str.contains("ObjectId"));
+        assert!(debug_str.contains("Endpoint"));
+    }
+
+    #[test]
+    fn test_object_type_from_u8_valid() {
+        assert_eq!(ObjectType::from_u8(0), Some(ObjectType::Unknown));
+        assert_eq!(ObjectType::from_u8(1), Some(ObjectType::Endpoint));
+        assert_eq!(ObjectType::from_u8(2), Some(ObjectType::Notification));
+        assert_eq!(ObjectType::from_u8(3), Some(ObjectType::MemoryRegion));
+        assert_eq!(ObjectType::from_u8(4), Some(ObjectType::AddressSpace));
+        assert_eq!(ObjectType::from_u8(5), Some(ObjectType::Thread));
+        assert_eq!(ObjectType::from_u8(6), Some(ObjectType::Process));
+        assert_eq!(ObjectType::from_u8(7), Some(ObjectType::SchedulerContext));
+        assert_eq!(ObjectType::from_u8(8), Some(ObjectType::IpcRing));
+    }
+
+    #[test]
+    fn test_object_type_from_u8_hardware() {
+        assert_eq!(ObjectType::from_u8(32), Some(ObjectType::Interrupt));
+        assert_eq!(ObjectType::from_u8(33), Some(ObjectType::IoPort));
+        assert_eq!(ObjectType::from_u8(34), Some(ObjectType::MmioRegion));
+        assert_eq!(ObjectType::from_u8(35), Some(ObjectType::DmaBuffer));
+        assert_eq!(ObjectType::from_u8(36), Some(ObjectType::GpuDevice));
+        assert_eq!(ObjectType::from_u8(37), Some(ObjectType::NpuDevice));
+        assert_eq!(ObjectType::from_u8(38), Some(ObjectType::BlockDevice));
+    }
+
+    #[test]
+    fn test_object_type_from_u8_tensor() {
+        assert_eq!(ObjectType::from_u8(64), Some(ObjectType::TensorBuffer));
+        assert_eq!(ObjectType::from_u8(65), Some(ObjectType::InferenceContext));
+        assert_eq!(ObjectType::from_u8(66), Some(ObjectType::ComputeQueue));
+        assert_eq!(ObjectType::from_u8(67), Some(ObjectType::ModelHandle));
+        assert_eq!(ObjectType::from_u8(68), Some(ObjectType::TensorView));
+    }
+
+    #[test]
+    fn test_object_type_from_u8_fs() {
+        assert_eq!(ObjectType::from_u8(96), Some(ObjectType::File));
+        assert_eq!(ObjectType::from_u8(97), Some(ObjectType::Directory));
+        assert_eq!(ObjectType::from_u8(98), Some(ObjectType::Mount));
+        assert_eq!(ObjectType::from_u8(99), Some(ObjectType::PersistentRegion));
+    }
+
+    #[test]
+    fn test_object_type_from_u8_timetravel() {
+        assert_eq!(ObjectType::from_u8(128), Some(ObjectType::Checkpoint));
+        assert_eq!(ObjectType::from_u8(129), Some(ObjectType::RecordingSession));
+    }
+
+    #[test]
+    fn test_object_type_from_u8_network() {
+        assert_eq!(ObjectType::from_u8(160), Some(ObjectType::Socket));
+        assert_eq!(ObjectType::from_u8(161), Some(ObjectType::NetworkInterface));
+    }
+
+    #[test]
+    fn test_object_type_from_u8_invalid() {
+        assert_eq!(ObjectType::from_u8(9), None);
+        assert_eq!(ObjectType::from_u8(31), None);
+        assert_eq!(ObjectType::from_u8(63), None);
+        assert_eq!(ObjectType::from_u8(200), None);
+        assert_eq!(ObjectType::from_u8(255), None);
+    }
+
+    #[test]
+    fn test_object_type_default_rights_memory() {
+        use super::super::Rights;
+        let rights = ObjectType::MemoryRegion.default_rights();
+        assert!(rights.contains(Rights::READ));
+        assert!(rights.contains(Rights::WRITE));
+        assert!(rights.contains(Rights::MAP));
+    }
+
+    #[test]
+    fn test_object_type_default_rights_endpoint() {
+        use super::super::Rights;
+        let rights = ObjectType::Endpoint.default_rights();
+        assert!(rights.contains(Rights::SEND));
+        assert!(rights.contains(Rights::RECEIVE));
+    }
+
+    #[test]
+    fn test_object_type_default_rights_process() {
+        use super::super::Rights;
+        let rights = ObjectType::Process.default_rights();
+        assert!(rights.contains(Rights::FORK));
+        assert!(rights.contains(Rights::KILL));
+
+        let rights2 = ObjectType::Thread.default_rights();
+        assert_eq!(rights, rights2);
+    }
+
+    #[test]
+    fn test_object_type_default_rights_tensor() {
+        use super::super::Rights;
+        let rights = ObjectType::TensorBuffer.default_rights();
+        assert!(rights.contains(Rights::TENSOR_ALLOC));
+        assert!(rights.contains(Rights::INFERENCE));
+
+        let rights2 = ObjectType::InferenceContext.default_rights();
+        assert_eq!(rights, rights2);
+    }
+
+    #[test]
+    fn test_object_type_default_rights_interrupt() {
+        use super::super::Rights;
+        let rights = ObjectType::Interrupt.default_rights();
+        assert!(rights.contains(Rights::IRQ));
+        assert!(rights.contains(Rights::READ));
+    }
+
+    #[test]
+    fn test_object_type_requires_privilege() {
+        assert!(ObjectType::Interrupt.requires_privilege());
+        assert!(ObjectType::IoPort.requires_privilege());
+        assert!(ObjectType::MmioRegion.requires_privilege());
+        assert!(ObjectType::DmaBuffer.requires_privilege());
+        assert!(ObjectType::GpuDevice.requires_privilege());
+        assert!(ObjectType::NpuDevice.requires_privilege());
+    }
+
+    #[test]
+    fn test_object_type_does_not_require_privilege() {
+        assert!(!ObjectType::Process.requires_privilege());
+        assert!(!ObjectType::Thread.requires_privilege());
+        assert!(!ObjectType::MemoryRegion.requires_privilege());
+        assert!(!ObjectType::Endpoint.requires_privilege());
+        assert!(!ObjectType::File.requires_privilege());
+        assert!(!ObjectType::Socket.requires_privilege());
+    }
+
+    #[test]
+    fn test_object_id_type_tag_preserved() {
+        // Test that object type is correctly encoded in the ID
+        let types = [
+            ObjectType::Process,
+            ObjectType::Thread,
+            ObjectType::Endpoint,
+            ObjectType::MemoryRegion,
+            ObjectType::TensorBuffer,
+            ObjectType::Socket,
+        ];
+
+        for obj_type in types {
+            let id = ObjectId::new(obj_type);
+            assert_eq!(id.object_type(), obj_type, "Type mismatch for {:?}", obj_type);
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn test_object_id_new_test() {
+        let id = ObjectId::new_test(42);
+        assert_eq!(id.raw(), 42);
+    }
+}

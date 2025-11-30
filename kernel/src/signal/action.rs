@@ -107,7 +107,7 @@ impl SigHandler {
 
 bitflags::bitflags! {
     /// Signal action flags
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct SigActionFlags: u32 {
         /// Don't add signal to mask during handler
         const NODEFER = 1 << 0;
@@ -146,5 +146,160 @@ impl From<&SigAction> for SignalDisposition {
             SigHandler::Ignore => SignalDisposition::Ignore,
             SigHandler::Handler(_) | SigHandler::SigAction(_) => SignalDisposition::Handle,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sigaction_default() {
+        let action = SigAction::default();
+        assert!(matches!(action.handler, SigHandler::Default));
+        assert!(action.mask.is_empty());
+        assert!(action.flags.is_empty());
+        assert!(action.restorer.is_none());
+    }
+
+    #[test]
+    fn test_sigaction_new_default() {
+        let action = SigAction::new_default();
+        assert!(matches!(action.handler, SigHandler::Default));
+    }
+
+    #[test]
+    fn test_sigaction_new_ignore() {
+        let action = SigAction::new_ignore();
+        assert!(matches!(action.handler, SigHandler::Ignore));
+    }
+
+    #[test]
+    fn test_sigaction_new_handler() {
+        let addr = 0x1000u64;
+        let action = SigAction::new_handler(addr);
+        assert!(matches!(action.handler, SigHandler::Handler(a) if a == addr));
+    }
+
+    #[test]
+    fn test_sigaction_new_sigaction() {
+        let addr = 0x2000u64;
+        let action = SigAction::new_sigaction(addr);
+        assert!(matches!(action.handler, SigHandler::SigAction(a) if a == addr));
+        assert!(action.flags.contains(SigActionFlags::SIGINFO));
+    }
+
+    #[test]
+    fn test_sigaction_with_mask() {
+        let mut mask = SigSet::empty();
+        mask.add(2); // SIGINT
+        mask.add(15); // SIGTERM
+
+        let action = SigAction::new_handler(0x1000).with_mask(mask.clone());
+        assert_eq!(action.mask, mask);
+    }
+
+    #[test]
+    fn test_sigaction_with_flags() {
+        let flags = SigActionFlags::RESTART | SigActionFlags::NODEFER;
+        let action = SigAction::new_handler(0x1000).with_flags(flags);
+        assert_eq!(action.flags, flags);
+    }
+
+    #[test]
+    fn test_sigaction_with_restorer() {
+        let restorer = 0x3000u64;
+        let action = SigAction::new_handler(0x1000).with_restorer(restorer);
+        assert_eq!(action.restorer, Some(restorer));
+    }
+
+    #[test]
+    fn test_sigaction_builder_chain() {
+        let mut mask = SigSet::empty();
+        mask.add(2);
+        let flags = SigActionFlags::RESTART;
+        let restorer = 0x3000u64;
+
+        let action = SigAction::new_handler(0x1000)
+            .with_mask(mask.clone())
+            .with_flags(flags)
+            .with_restorer(restorer);
+
+        assert!(matches!(action.handler, SigHandler::Handler(0x1000)));
+        assert_eq!(action.mask, mask);
+        assert_eq!(action.flags, flags);
+        assert_eq!(action.restorer, Some(restorer));
+    }
+
+    #[test]
+    fn test_sighandler_is_custom() {
+        assert!(!SigHandler::Default.is_custom());
+        assert!(!SigHandler::Ignore.is_custom());
+        assert!(SigHandler::Handler(0x1000).is_custom());
+        assert!(SigHandler::SigAction(0x2000).is_custom());
+    }
+
+    #[test]
+    fn test_sighandler_address() {
+        assert_eq!(SigHandler::Default.address(), None);
+        assert_eq!(SigHandler::Ignore.address(), None);
+        assert_eq!(SigHandler::Handler(0x1000).address(), Some(0x1000));
+        assert_eq!(SigHandler::SigAction(0x2000).address(), Some(0x2000));
+    }
+
+    #[test]
+    fn test_sigactionflags_empty() {
+        let flags = SigActionFlags::empty();
+        assert!(flags.is_empty());
+        assert!(!flags.contains(SigActionFlags::RESTART));
+    }
+
+    #[test]
+    fn test_sigactionflags_individual() {
+        assert!(!SigActionFlags::NODEFER.is_empty());
+        assert!(!SigActionFlags::NOCLDSTOP.is_empty());
+        assert!(!SigActionFlags::NOCLDWAIT.is_empty());
+        assert!(!SigActionFlags::SIGINFO.is_empty());
+        assert!(!SigActionFlags::ONSTACK.is_empty());
+        assert!(!SigActionFlags::RESETHAND.is_empty());
+        assert!(!SigActionFlags::RESTART.is_empty());
+        assert!(!SigActionFlags::RESTORER.is_empty());
+    }
+
+    #[test]
+    fn test_sigactionflags_combine() {
+        let flags = SigActionFlags::RESTART | SigActionFlags::NODEFER | SigActionFlags::SIGINFO;
+        assert!(flags.contains(SigActionFlags::RESTART));
+        assert!(flags.contains(SigActionFlags::NODEFER));
+        assert!(flags.contains(SigActionFlags::SIGINFO));
+        assert!(!flags.contains(SigActionFlags::ONSTACK));
+    }
+
+    #[test]
+    fn test_signal_disposition_from_default() {
+        let action = SigAction::new_default();
+        let disp = SignalDisposition::from(&action);
+        assert_eq!(disp, SignalDisposition::Default);
+    }
+
+    #[test]
+    fn test_signal_disposition_from_ignore() {
+        let action = SigAction::new_ignore();
+        let disp = SignalDisposition::from(&action);
+        assert_eq!(disp, SignalDisposition::Ignore);
+    }
+
+    #[test]
+    fn test_signal_disposition_from_handler() {
+        let action = SigAction::new_handler(0x1000);
+        let disp = SignalDisposition::from(&action);
+        assert_eq!(disp, SignalDisposition::Handle);
+    }
+
+    #[test]
+    fn test_signal_disposition_from_sigaction() {
+        let action = SigAction::new_sigaction(0x2000);
+        let disp = SignalDisposition::from(&action);
+        assert_eq!(disp, SignalDisposition::Handle);
     }
 }
