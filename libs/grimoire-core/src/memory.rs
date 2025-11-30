@@ -179,11 +179,10 @@ impl PersonaMemory {
 
         // Prune if too long
         while self.short_term.len() > self.config.max_short_term_entries {
-            if let Some(removed) = self.short_term.remove(0) {
-                // Consider promoting to long-term
-                if removed.importance >= self.config.long_term_threshold {
-                    self.promote_to_long_term(removed);
-                }
+            let removed = self.short_term.remove(0);
+            // Consider promoting to long-term
+            if removed.importance >= self.config.long_term_threshold {
+                self.promote_to_long_term(removed);
             }
         }
 
