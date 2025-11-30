@@ -9,7 +9,7 @@ members = [
     "libs/grimoire-client",
     "init",
     "nyx-serviced",
-    "spectre",
+    # "spectre",  # Temporarily excluded - requires libclang for PAM bindings
     "vesper",
     "phantom",
     "nexus",

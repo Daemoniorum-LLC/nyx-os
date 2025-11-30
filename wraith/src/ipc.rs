@@ -8,7 +8,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 use tracing::{info, error, debug};
 
-use crate::WraithState;
+use crate::state::WraithState;
 use crate::interface::NetworkInterface;
 use crate::profile::{NetworkProfile, IpConfig};
 

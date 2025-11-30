@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use tracing::debug;
 
 /// Capability request to evaluate
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CapabilityRequest {
     /// Requesting process ID
     pub pid: u32,

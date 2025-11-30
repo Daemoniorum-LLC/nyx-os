@@ -55,36 +55,29 @@ async fn main() -> Result<()> {
     let config = config::load_config(&args.config).await?;
 
     // Initialize components
-    let firewall = Arc::new(firewall::Firewall::new(&config.firewall)?);
-    let dns_resolver = Arc::new(dns::DnsResolver::new(&config.dns).await?);
-    let interfaces = Arc::new(interfaces::InterfaceManager::new()?);
-    let monitor = Arc::new(monitor::NetworkMonitor::new(&config.monitor)?);
-
-    // Start DNS server if enabled
-    if config.dns.server_enabled {
-        let dns_clone = dns_resolver.clone();
-        tokio::spawn(async move {
-            if let Err(e) = dns_clone.run_server().await {
-                error!("DNS server error: {}", e);
-            }
-        });
-    }
+    let firewall = Arc::new(firewall::Firewall::new(config.firewall.clone()));
+    let dns_resolver = Arc::new(dns::DnsResolver::new(config.dns.clone()));
+    let interfaces = Arc::new(tokio::sync::RwLock::new(interfaces::InterfaceManager::new()));
+    let routing = Arc::new(tokio::sync::RwLock::new(routing::RoutingTable::new()));
+    let monitor = Arc::new(monitor::NetworkMonitor::new(interfaces.clone(), config.monitor.interval_secs));
+    let vpn = Arc::new(vpn::VpnManager::new(config.vpn.clone()));
 
     // Start network monitor
     let monitor_clone = monitor.clone();
     tokio::spawn(async move {
-        monitor_clone.run().await;
+        monitor_clone.start().await;
     });
 
     // Start IPC server
-    let server = ipc::ArachneServer::new(
-        args.socket,
+    let server = ipc::IpcServer::new(
         firewall,
         dns_resolver,
         interfaces,
+        routing,
         monitor,
+        vpn,
     );
 
     info!("Arachne ready");
-    server.run().await
+    server.start(&args.socket).await
 }

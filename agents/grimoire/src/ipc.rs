@@ -137,15 +137,11 @@ async fn handle_client(
     // Create notification channel for this client
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel::<IpcResponse>(100);
 
-    // Spawn notification sender
-    let writer_notify = writer.try_clone();
+    // Spawn notification handler (placeholder for future implementation)
     tokio::spawn(async move {
-        while let Some(notification) = notify_rx.recv().await {
-            if let Ok(json) = serde_json::to_string(&notification) {
-                // Note: This would need proper synchronization in production
-                // let _ = writer_notify.write_all(json.as_bytes()).await;
-                // let _ = writer_notify.write_all(b"\n").await;
-            }
+        while let Some(_notification) = notify_rx.recv().await {
+            // Note: Real implementation would need shared writer access
+            // Currently notifications are not sent to clients
         }
     });
 
