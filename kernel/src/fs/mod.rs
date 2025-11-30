@@ -203,7 +203,7 @@ pub fn init_initrd(addr: PhysAddr, size: usize) {
 
     // Create initrd filesystem
     let data = unsafe {
-        core::slice::from_raw_parts(virt_addr.as_u64() as *const u8, size)
+        core::slice::from_raw_parts(virt_addr as *const u8, size)
     };
 
     match InitrdFs::new(data) {

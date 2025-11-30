@@ -19,12 +19,16 @@ pub const ENTRIES_PER_TABLE: usize = 512;
 /// Virtual address mask for each level
 const LEVEL_MASK: u64 = 0x1FF; // 9 bits
 
+/// Kernel page table root (set during boot)
+static mut KERNEL_PAGE_TABLE_ROOT: u64 = 0;
+
 /// Initialize paging (kernel page tables)
 pub fn init() {
     // Read current CR3 (page table root set by bootloader)
     let cr3: u64;
     unsafe {
         asm!("mov {}, cr3", out(reg) cr3, options(nostack, preserves_flags));
+        KERNEL_PAGE_TABLE_ROOT = cr3 & 0x000F_FFFF_FFFF_F000;
     }
 
     log::trace!("Current CR3: {:#x}", cr3);
@@ -33,6 +37,11 @@ pub fn init() {
     enable_paging_features();
 
     log::trace!("Paging initialized");
+}
+
+/// Get the kernel page table root address
+pub fn get_kernel_page_table() -> PhysAddr {
+    unsafe { PhysAddr::new(KERNEL_PAGE_TABLE_ROOT) }
 }
 
 /// Enable additional paging features (NX, PCID, etc.)

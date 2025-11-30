@@ -179,7 +179,7 @@ pub struct InterruptStackFrameWithError {
 
 macro_rules! interrupt_handler {
     ($name:ident) => {
-        #[naked]
+        #[unsafe(naked)]
         extern "C" fn $name() {
             unsafe {
                 asm!(
@@ -229,7 +229,7 @@ macro_rules! interrupt_handler {
 
 macro_rules! interrupt_handler_with_error {
     ($name:ident) => {
-        #[naked]
+        #[unsafe(naked)]
         extern "C" fn $name() {
             unsafe {
                 asm!(
@@ -281,7 +281,7 @@ macro_rules! interrupt_handler_with_error {
 }
 
 // Use simpler approach without macros for now
-#[naked]
+#[unsafe(naked)]
 extern "C" fn divide_error() {
     unsafe {
         asm!(
@@ -294,7 +294,7 @@ extern "C" fn divide_error() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn debug() {
     unsafe {
         asm!(
@@ -307,7 +307,7 @@ extern "C" fn debug() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn nmi() {
     unsafe {
         asm!(
@@ -320,7 +320,7 @@ extern "C" fn nmi() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn breakpoint() {
     unsafe {
         asm!(
@@ -333,7 +333,7 @@ extern "C" fn breakpoint() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn overflow() {
     unsafe {
         asm!(
@@ -346,7 +346,7 @@ extern "C" fn overflow() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn bound_range() {
     unsafe {
         asm!(
@@ -359,7 +359,7 @@ extern "C" fn bound_range() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn invalid_opcode() {
     unsafe {
         asm!(
@@ -372,7 +372,7 @@ extern "C" fn invalid_opcode() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn device_not_available() {
     unsafe {
         asm!(
@@ -385,7 +385,7 @@ extern "C" fn device_not_available() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn double_fault() {
     unsafe {
         asm!(
@@ -398,7 +398,7 @@ extern "C" fn double_fault() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn invalid_tss() {
     unsafe {
         asm!(
@@ -410,7 +410,7 @@ extern "C" fn invalid_tss() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn segment_not_present() {
     unsafe {
         asm!(
@@ -422,7 +422,7 @@ extern "C" fn segment_not_present() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn stack_segment() {
     unsafe {
         asm!(
@@ -434,7 +434,7 @@ extern "C" fn stack_segment() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn general_protection() {
     unsafe {
         asm!(
@@ -446,7 +446,7 @@ extern "C" fn general_protection() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn page_fault() {
     unsafe {
         asm!(
@@ -458,7 +458,7 @@ extern "C" fn page_fault() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn x87_floating_point() {
     unsafe {
         asm!(
@@ -471,7 +471,7 @@ extern "C" fn x87_floating_point() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn alignment_check() {
     unsafe {
         asm!(
@@ -483,7 +483,7 @@ extern "C" fn alignment_check() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn machine_check() {
     unsafe {
         asm!(
@@ -496,7 +496,7 @@ extern "C" fn machine_check() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn simd_floating_point() {
     unsafe {
         asm!(
@@ -509,7 +509,7 @@ extern "C" fn simd_floating_point() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn virtualization() {
     unsafe {
         asm!(
@@ -522,7 +522,7 @@ extern "C" fn virtualization() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn control_protection() {
     unsafe {
         asm!(
@@ -534,7 +534,7 @@ extern "C" fn control_protection() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn hypervisor_injection() {
     unsafe {
         asm!(
@@ -547,7 +547,7 @@ extern "C" fn hypervisor_injection() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn vmm_communication() {
     unsafe {
         asm!(
@@ -559,7 +559,7 @@ extern "C" fn vmm_communication() {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn security_exception() {
     unsafe {
         asm!(
@@ -572,7 +572,7 @@ extern "C" fn security_exception() {
 }
 
 /// Common exception handler (no error code)
-#[naked]
+#[unsafe(naked)]
 extern "C" fn exception_common() {
     unsafe {
         asm!(
@@ -622,7 +622,7 @@ extern "C" fn exception_common() {
 }
 
 /// Common exception handler (with error code)
-#[naked]
+#[unsafe(naked)]
 extern "C" fn exception_common_with_error() {
     unsafe {
         asm!(
@@ -781,7 +781,7 @@ extern "C" fn exception_handler_rust(frame: &ExceptionFrame) {
 
 macro_rules! irq_handler {
     ($name:ident, $irq:expr) => {
-        #[naked]
+        #[unsafe(naked)]
         extern "C" fn $name() {
             unsafe {
                 asm!(
@@ -880,7 +880,7 @@ fn send_eoi(irq: u8) {
 // Syscall and Spurious Handlers
 // =============================================================================
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn syscall_interrupt() {
     unsafe {
         asm!(
@@ -929,7 +929,7 @@ extern "C" fn syscall_handler_rust(_frame: &ExceptionFrame) {
     log::trace!("Syscall via INT 0x80");
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn spurious() {
     unsafe {
         asm!(

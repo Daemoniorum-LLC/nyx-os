@@ -10,7 +10,8 @@ use super::{
     PROCESS_SIGNALS, THREAD_SIGNALS,
 };
 use crate::mem::VirtAddr;
-use crate::process::{ProcessId, ThreadId};
+use crate::process::ProcessId;
+use crate::sched::ThreadId;
 
 /// Signal frame pushed on user stack before calling handler
 #[repr(C)]
@@ -34,7 +35,7 @@ pub struct SignalFrame {
 
 /// siginfo_t structure for user-space
 #[repr(C)]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SigInfoFrame {
     pub si_signo: i32,
     pub si_errno: i32,
@@ -51,6 +52,28 @@ pub struct SigInfoFrame {
     pub si_band: i64,
     pub si_fd: i32,
     pub _reserved: [u8; 48],
+}
+
+impl Default for SigInfoFrame {
+    fn default() -> Self {
+        Self {
+            si_signo: 0,
+            si_errno: 0,
+            si_code: 0,
+            _pad: 0,
+            si_pid: 0,
+            si_uid: 0,
+            si_status: 0,
+            _pad2: 0,
+            si_utime: 0,
+            si_stime: 0,
+            si_value: 0,
+            si_addr: 0,
+            si_band: 0,
+            si_fd: 0,
+            _reserved: [0u8; 48],
+        }
+    }
 }
 
 impl From<&SigInfo> for SigInfoFrame {

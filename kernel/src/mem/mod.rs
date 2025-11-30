@@ -9,10 +9,19 @@
 
 mod frame;
 mod heap;
-mod virt;
+pub mod virt;
 
 pub use frame::FrameAllocator;
-pub use virt::{AddressSpace, VirtualMemory};
+pub use virt::{AddressSpace, VirtualMemory, Protection};
+
+/// Convert physical address to virtual address (identity mapping for kernel)
+#[inline]
+pub fn phys_to_virt(phys: PhysAddr) -> u64 {
+    // In the kernel, physical memory is typically identity-mapped or offset-mapped
+    // For simplicity, we assume identity mapping in the higher half
+    const KERNEL_PHYS_OFFSET: u64 = 0xFFFF_8000_0000_0000;
+    phys.as_u64() + KERNEL_PHYS_OFFSET
+}
 
 use crate::arch::BootInfo;
 use spin::Mutex;

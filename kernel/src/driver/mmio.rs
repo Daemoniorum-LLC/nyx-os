@@ -129,9 +129,9 @@ pub fn map_region(phys_addr: PhysAddr, size: u64) -> Result<VirtAddr, DriverErro
 
 /// Map a single MMIO page
 unsafe fn map_mmio_page(virt: VirtAddr, phys: PhysAddr) -> Result<(), DriverError> {
-    use crate::arch::x86_64::paging::{PageFlags, PageMapper};
+    use crate::arch::paging::{PageFlags, PageMapper};
 
-    let root = crate::arch::x86_64::paging::get_kernel_page_table();
+    let root = crate::arch::paging::get_kernel_page_table();
     let mut mapper = PageMapper::new(root);
 
     let flags = PageFlags::PRESENT
@@ -182,16 +182,16 @@ pub fn unmap_region(phys_addr: PhysAddr) -> Result<(), DriverError> {
 
 /// Unmap a single MMIO page
 unsafe fn unmap_mmio_page(virt: VirtAddr) -> Result<(), DriverError> {
-    use crate::arch::x86_64::paging::PageMapper;
+    use crate::arch::paging::PageMapper;
 
-    let root = crate::arch::x86_64::paging::get_kernel_page_table();
+    let root = crate::arch::paging::get_kernel_page_table();
     let mut mapper = PageMapper::new(root);
 
     mapper
         .unmap_page(virt)
         .map_err(|_| DriverError::DeviceNotFound)?;
 
-    crate::arch::x86_64::paging::flush_tlb_page(virt);
+    crate::arch::paging::flush_tlb_page(virt);
 
     Ok(())
 }

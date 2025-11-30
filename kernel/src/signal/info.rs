@@ -90,8 +90,8 @@ impl SigInfo {
     }
 
     /// Builder: set sender
-    pub fn with_sender(mut self, pid: ProcessId) -> Self {
-        self.sender_pid = Some(pid);
+    pub fn with_sender(mut self, pid: Option<ProcessId>) -> Self {
+        self.sender_pid = pid;
         self.code = SigCode::User;
         self
     }
@@ -122,10 +122,15 @@ impl SigInfo {
 }
 
 /// Signal code (how the signal was generated)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Note: In POSIX, signal codes are specific to each signal type,
+/// but we use unique values here to satisfy Rust's enum requirements.
+/// The raw POSIX values can be obtained via `posix_value()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(i32)]
 pub enum SigCode {
     /// Sent by user (kill, raise, etc.)
+    #[default]
     User = 0,
     /// Sent by kernel
     Kernel = 0x80,
@@ -140,71 +145,82 @@ pub enum SigCode {
     /// Sent by SIGIO
     SigIO = -5,
 
-    // SIGCHLD codes
+    // SIGCHLD codes (offset 0x100)
     /// Child exited
-    ChldExited = 1,
+    ChldExited = 0x101,
     /// Child killed
-    ChldKilled = 2,
+    ChldKilled = 0x102,
     /// Child dumped core
-    ChldDumped = 3,
+    ChldDumped = 0x103,
     /// Child trapped
-    ChldTrapped = 4,
+    ChldTrapped = 0x104,
     /// Child stopped
-    ChldStopped = 5,
+    ChldStopped = 0x105,
     /// Child continued
-    ChldContinued = 6,
+    ChldContinued = 0x106,
 
-    // SIGSEGV codes
+    // SIGSEGV codes (offset 0x200)
     /// Address not mapped
-    SegvMapErr = 1,
+    SegvMapErr = 0x201,
     /// Invalid permissions
-    SegvAccErr = 2,
+    SegvAccErr = 0x202,
 
-    // SIGBUS codes
+    // SIGBUS codes (offset 0x300)
     /// Invalid address alignment
-    BusAddrErr = 1,
+    BusAddrErr = 0x301,
     /// Non-existent physical address
-    BusObjErr = 2,
+    BusObjErr = 0x302,
     /// Object-specific hardware error
-    BusMcErr = 3,
+    BusMcErr = 0x303,
 
-    // SIGILL codes
+    // SIGILL codes (offset 0x400)
     /// Illegal opcode
-    IllOp = 1,
+    IllOp = 0x401,
     /// Illegal operand
-    IllOperand = 2,
+    IllOperand = 0x402,
     /// Illegal addressing mode
-    IllAddr = 3,
+    IllAddr = 0x403,
     /// Illegal trap
-    IllTrap = 4,
+    IllTrap = 0x404,
     /// Privileged opcode
-    IllPriv = 5,
+    IllPriv = 0x405,
     /// Coprocessor error
-    IllCoproc = 6,
+    IllCoproc = 0x406,
 
-    // SIGFPE codes
+    // SIGFPE codes (offset 0x500)
     /// Integer divide by zero
-    FpeDivZero = 1,
+    FpeDivZero = 0x501,
     /// Integer overflow
-    FpeIntOvf = 2,
+    FpeIntOvf = 0x502,
     /// Floating-point divide by zero
-    FpeFltDiv = 3,
+    FpeFltDiv = 0x503,
     /// Floating-point overflow
-    FpeFltOvf = 4,
+    FpeFltOvf = 0x504,
     /// Floating-point underflow
-    FpeFltUnd = 5,
+    FpeFltUnd = 0x505,
     /// Floating-point inexact result
-    FpeFltRes = 6,
+    FpeFltRes = 0x506,
     /// Invalid floating-point operation
-    FpeFltInv = 7,
+    FpeFltInv = 0x507,
     /// Subscript out of range
-    FpeFltSub = 8,
+    FpeFltSub = 0x508,
 
-    // SIGTRAP codes
+    // SIGTRAP codes (offset 0x600)
     /// Process breakpoint
-    TrapBrkpt = 1,
+    TrapBrkpt = 0x601,
     /// Process trace trap
-    TrapTrace = 2,
+    TrapTrace = 0x602,
+}
+
+impl SigCode {
+    /// Get the POSIX si_code value (1-based within signal type)
+    pub fn posix_value(&self) -> i32 {
+        match *self as i32 {
+            v if v < 0 => v,
+            v if v < 0x100 => v,
+            v => (v & 0xFF) as i32,
+        }
+    }
 }
 
 /// Signal value (for sigqueue)

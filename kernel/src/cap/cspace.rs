@@ -17,6 +17,7 @@ pub struct CSpace {
 }
 
 /// CNode - a node in the capability tree
+#[derive(Clone)]
 pub struct CNode {
     slots: [CSlot; CNODE_SIZE],
 }

@@ -125,6 +125,8 @@ pub enum IpcError {
     Disconnected,
     /// Invalid operation for this object type
     InvalidOperation,
+    /// Internal error
+    InternalError,
 }
 
 impl From<CapError> for IpcError {

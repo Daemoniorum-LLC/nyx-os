@@ -20,7 +20,7 @@ members = [
     "agents/archon",
     "agents/arachne",
     "agents/grimoire",
-    "aether",
+    # "aether",  # Temporarily excluded - dependency issues
     "umbra",
     "summoner",
     "herald",

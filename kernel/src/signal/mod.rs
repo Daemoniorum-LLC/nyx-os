@@ -38,7 +38,8 @@ pub use info::SigInfo;
 pub use queue::SignalQueue;
 pub use set::SigSet;
 
-use crate::process::{ProcessId, ThreadId};
+use crate::process::ProcessId;
+use crate::sched::ThreadId;
 use alloc::collections::BTreeMap;
 use spin::RwLock;
 

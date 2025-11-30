@@ -4,8 +4,9 @@
 //! Unlike threads, processes have their own capability space and address space.
 
 use crate::cap::{CSpace, Capability, ObjectId, ObjectType, Rights, create_cspace};
-use crate::mem::{AddressSpace, VirtAddr, PhysAddr, PAGE_SIZE};
-use crate::sched::{Thread, ThreadId, ThreadState, SchedClass};
+use crate::mem::{AddressSpace, VirtAddr, PhysAddr, PAGE_SIZE, virt::Protection};
+use crate::sched::{Thread, ThreadState, SchedClass};
+pub use crate::sched::ThreadId;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;

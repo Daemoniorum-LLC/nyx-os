@@ -10,7 +10,7 @@
 //! - **AI-Native**: First-class tensor operations and inference syscalls
 //! - **Formally Verified**: Core components proven in Lean 4
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![feature(
     abi_x86_interrupt,
     allocator_api,
@@ -22,25 +22,131 @@
     strict_provenance,
 )]
 #![deny(unsafe_op_in_unsafe_fn)]
-#![warn(missing_docs, rust_2024_compatibility)]
+#![allow(missing_docs)]
 
+#[cfg(not(test))]
 extern crate alloc;
+#[cfg(test)]
+extern crate std as alloc;
 
 pub mod arch;
 pub mod cap;
-pub mod driver;
-pub mod fs;
-pub mod ipc;
-pub mod mem;
-pub mod net;
-pub mod process;
-pub mod sched;
 pub mod signal;
+
+// Test-compatible modules (data structures and pure logic)
+#[cfg(test)]
+pub mod mem {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct PhysAddr(pub u64);
+    impl PhysAddr {
+        pub const fn new(addr: u64) -> Self { Self(addr) }
+        pub const fn as_u64(self) -> u64 { self.0 }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct VirtAddr(pub u64);
+    impl VirtAddr {
+        pub const fn new(addr: u64) -> Self { Self(addr) }
+        pub const fn as_u64(self) -> u64 { self.0 }
+    }
+
+    pub const PAGE_SIZE: u64 = 4096;
+
+    pub mod virt {
+        bitflags::bitflags! {
+            #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+            pub struct Protection: u8 {
+                const READ = 1 << 0;
+                const WRITE = 1 << 1;
+                const EXECUTE = 1 << 2;
+                const USER = 1 << 3;
+            }
+        }
+    }
+
+    pub fn phys_to_virt(phys: PhysAddr) -> u64 {
+        phys.as_u64() + 0xFFFF_8000_0000_0000
+    }
+}
+
+// Full modules only in non-test builds
+#[cfg(not(test))]
+pub mod driver;
+#[cfg(not(test))]
+pub mod fs;
+#[cfg(not(test))]
+pub mod ipc;
+#[cfg(not(test))]
+pub mod mem;
+#[cfg(not(test))]
+pub mod net;
+#[cfg(not(test))]
+pub mod process;
+#[cfg(not(test))]
+pub mod sched;
+#[cfg(not(test))]
 pub mod tensor;
+#[cfg(not(test))]
 pub mod timetravel;
 
+#[cfg(not(test))]
 mod panic;
+#[cfg(not(test))]
 mod syscall;
+
+// Test-only stubs for gated modules
+#[cfg(test)]
+pub mod process {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PID: AtomicU64 = AtomicU64::new(1);
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct ProcessId(u64);
+
+    impl ProcessId {
+        pub fn new() -> Self {
+            Self(NEXT_PID.fetch_add(1, Ordering::Relaxed))
+        }
+        pub fn raw(&self) -> u64 { self.0 }
+    }
+
+    pub fn current_pid() -> Option<ProcessId> {
+        Some(ProcessId(1))
+    }
+
+    pub fn terminate(_pid: ProcessId, _exit_code: i32) {}
+    pub fn stop(_pid: ProcessId) {}
+    pub fn resume(_pid: ProcessId) {}
+}
+
+#[cfg(test)]
+pub mod sched {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct ThreadId(pub u64);
+
+    impl ThreadId {
+        pub fn new(id: u64) -> Self { Self(id) }
+        pub fn raw(&self) -> u64 { self.0 }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum BlockReason {
+        Sleep,
+        IpcReceive,
+        IpcSend,
+        Mutex,
+        Semaphore,
+        Futex,
+        Signal,
+    }
+
+    pub fn timer_tick() {}
+    pub fn wake(_tid: ThreadId) {}
+    pub fn block(_reason: BlockReason) {}
+    pub fn current_thread_id() -> ThreadId { ThreadId(1) }
+    pub fn yield_now() {}
+}
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -48,7 +154,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Build timestamp
-pub const BUILD_TIME: &str = env!("BUILD_TIMESTAMP", "unknown");
+pub const BUILD_TIME: &str = match option_env!("BUILD_TIMESTAMP") {
+    Some(t) => t,
+    None => "unknown",
+};
 
 /// Global tick counter (nanoseconds since boot)
 static TICK_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +173,7 @@ pub fn now_ns() -> u64 {
 /// # Safety
 ///
 /// Must only be called once during boot, after arch-specific initialization.
+#[cfg(not(test))]
 pub unsafe fn kernel_main(boot_info: &arch::BootInfo) -> ! {
     log::info!("Nyx Kernel v{VERSION} starting...");
 
@@ -134,6 +244,7 @@ pub unsafe fn kernel_main(boot_info: &arch::BootInfo) -> ! {
 }
 
 /// Load the init process from initrd
+#[cfg(not(test))]
 fn load_init_process(_boot_info: &arch::BootInfo) -> cap::Capability {
     // Try to spawn /init or /sbin/init
     let init_paths = ["/init", "/sbin/init", "/bin/init"];

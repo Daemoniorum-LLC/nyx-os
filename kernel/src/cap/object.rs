@@ -10,7 +10,7 @@ static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
 /// Object IDs are 64 bits:
 /// - Bits 0-55: Unique counter
 /// - Bits 56-63: Object type tag
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectId(u64);
 
 impl ObjectId {

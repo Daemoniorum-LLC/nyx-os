@@ -344,7 +344,7 @@ fn rdtsc() -> u64 {
 }
 
 /// AP entry point (called by trampoline code after transitioning to 64-bit mode)
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn ap_entry() {
     // Initialize this AP
     let apic_id = read_apic_id();

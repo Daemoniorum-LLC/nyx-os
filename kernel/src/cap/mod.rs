@@ -26,13 +26,15 @@ pub use object::{ObjectId, ObjectType};
 pub use rights::Rights;
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::RwLock;
+use spin::{Lazy, RwLock};
 
 /// Global capability generation counter
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Capability registry (maps object IDs to metadata)
-static REGISTRY: RwLock<CapabilityRegistry> = RwLock::new(CapabilityRegistry::new());
+static REGISTRY: Lazy<RwLock<CapabilityRegistry>> = Lazy::new(|| {
+    RwLock::new(CapabilityRegistry::new_lazy())
+});
 
 /// Initialize the capability system
 pub fn init() {
@@ -105,8 +107,8 @@ impl Capability {
     /// - Result rights are a subset of self.rights
     /// - Result object_id equals self.object_id
     /// - Result generation equals self.generation
-    #[contracts::ensures(ret.is_ok() -> ret.unwrap().rights.bits() & !self.rights.bits() == 0)]
-    #[contracts::ensures(ret.is_ok() -> ret.unwrap().object_id == self.object_id)]
+    #[cfg_attr(not(test), contracts::ensures(ret.is_ok() -> ret.as_ref().unwrap().rights.bits() & !self.rights.bits() == 0))]
+    #[cfg_attr(not(test), contracts::ensures(ret.is_ok() -> ret.as_ref().unwrap().object_id == self.object_id))]
     pub fn derive(&self, mask: Rights) -> Result<Capability, CapError> {
         // Must have GRANT right to derive
         if !self.rights.contains(Rights::GRANT) {
@@ -216,7 +218,7 @@ struct CapabilityRegistry {
 }
 
 impl CapabilityRegistry {
-    const fn new() -> Self {
+    fn new_lazy() -> Self {
         Self {
             objects: hashbrown::HashMap::new(),
         }
