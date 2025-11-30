@@ -1,15 +1,24 @@
-//! Firewall management using nftables
+//! Firewall management with platform-aware backends
+//!
+//! Supports:
+//! - nftables (Linux native)
+//! - iptables (legacy fallback)
+//! - Windows Firewall via PowerShell (WSL)
+//! - Logging-only mode (containers/restricted)
 
 use crate::config::{Action, DefaultPolicy, Direction, FirewallConfig, FirewallRule};
 use anyhow::{anyhow, Result};
+use libnyx_platform::{Platform, PlatformCapabilities, compat::FirewallBackend};
 use std::collections::HashMap;
 use std::process::Command;
 use tokio::sync::RwLock;
 
-/// Firewall manager using nftables
+/// Firewall manager with platform-aware backend
 pub struct Firewall {
     config: RwLock<FirewallConfig>,
     active_rules: RwLock<HashMap<String, ActiveRule>>,
+    backend: FirewallBackend,
+    platform: Platform,
 }
 
 #[derive(Debug, Clone)]
@@ -33,10 +42,31 @@ pub struct BlockedConnection {
 
 impl Firewall {
     pub fn new(config: FirewallConfig) -> Self {
+        let platform = Platform::detect();
+        let backend = libnyx_platform::compat::firewall_backend();
+
+        tracing::info!(
+            "Firewall initialized on {} with {:?} backend",
+            platform.name(),
+            backend
+        );
+
         Self {
             config: RwLock::new(config),
             active_rules: RwLock::new(HashMap::new()),
+            backend,
+            platform,
         }
+    }
+
+    /// Get the active firewall backend
+    pub fn backend(&self) -> FirewallBackend {
+        self.backend
+    }
+
+    /// Check if firewall operations are available
+    pub fn is_available(&self) -> bool {
+        !matches!(self.backend, FirewallBackend::None)
     }
 
     /// Initialize the firewall
@@ -48,8 +78,21 @@ impl Firewall {
             return Ok(());
         }
 
-        // Create base nftables structure
-        self.setup_tables().await?;
+        match self.backend {
+            FirewallBackend::Nftables => {
+                self.setup_nftables().await?;
+            }
+            FirewallBackend::Iptables => {
+                self.setup_iptables().await?;
+            }
+            FirewallBackend::WindowsFirewall => {
+                self.setup_windows_firewall().await?;
+            }
+            FirewallBackend::None => {
+                tracing::warn!("No firewall backend available - rules will be logged only");
+                return Ok(());
+            }
+        }
 
         // Set default policy
         self.set_default_policy(config.default_policy).await?;
@@ -61,12 +104,16 @@ impl Firewall {
             }
         }
 
-        tracing::info!("Firewall initialized with {} rules", config.rules.len());
+        tracing::info!(
+            "Firewall initialized with {} rules using {:?}",
+            config.rules.len(),
+            self.backend
+        );
         Ok(())
     }
 
-    async fn setup_tables(&self) -> Result<()> {
-        // Create nyx table and chains
+    /// Setup nftables backend
+    async fn setup_nftables(&self) -> Result<()> {
         let commands = r#"
             table inet nyx {
                 chain input {
@@ -87,14 +134,85 @@ impl Firewall {
         Ok(())
     }
 
+    /// Setup iptables backend (legacy)
+    async fn setup_iptables(&self) -> Result<()> {
+        // Create nyx chains
+        let _ = Command::new("iptables").args(["-N", "NYX-INPUT"]).output();
+        let _ = Command::new("iptables").args(["-N", "NYX-OUTPUT"]).output();
+
+        // Insert jumps to nyx chains
+        let _ = Command::new("iptables").args(["-I", "INPUT", "-j", "NYX-INPUT"]).output();
+        let _ = Command::new("iptables").args(["-I", "OUTPUT", "-j", "NYX-OUTPUT"]).output();
+
+        // Allow established connections
+        Command::new("iptables")
+            .args(["-A", "NYX-INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
+            .output()?;
+
+        // Allow loopback
+        Command::new("iptables")
+            .args(["-A", "NYX-INPUT", "-i", "lo", "-j", "ACCEPT"])
+            .output()?;
+
+        Ok(())
+    }
+
+    /// Setup Windows Firewall via PowerShell (WSL)
+    async fn setup_windows_firewall(&self) -> Result<()> {
+        tracing::info!("Setting up Windows Firewall rules via PowerShell");
+
+        // Create a firewall group for Nyx rules
+        let ps_script = r#"
+            $groupName = "Nyx DaemonOS"
+            # Verify we can access Windows Firewall
+            Get-NetFirewallProfile | Out-Null
+        "#;
+
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", ps_script])
+            .output()?;
+
+        if !output.status.success() {
+            tracing::warn!("Windows Firewall access limited - some features may not work");
+        }
+
+        Ok(())
+    }
+
     async fn set_default_policy(&self, policy: DefaultPolicy) -> Result<()> {
         let policy_str = match policy {
             DefaultPolicy::Accept => "accept",
             DefaultPolicy::Drop => "drop",
-            DefaultPolicy::Reject => "drop", // nftables doesn't have reject as chain policy
+            DefaultPolicy::Reject => "drop",
         };
 
-        self.nft_command(&["chain", "inet", "nyx", "input", &format!("{{ policy {} }}", policy_str)], None).await?;
+        match self.backend {
+            FirewallBackend::Nftables => {
+                self.nft_command(
+                    &["chain", "inet", "nyx", "input", &format!("{{ policy {} }}", policy_str)],
+                    None
+                ).await?;
+            }
+            FirewallBackend::Iptables => {
+                let target = if policy_str == "accept" { "ACCEPT" } else { "DROP" };
+                Command::new("iptables")
+                    .args(["-P", "INPUT", target])
+                    .output()?;
+            }
+            FirewallBackend::WindowsFirewall => {
+                let action = if policy_str == "accept" { "Allow" } else { "Block" };
+                let ps = format!(
+                    "Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction {}",
+                    action
+                );
+                let _ = Command::new("powershell.exe")
+                    .args(["-NoProfile", "-Command", &ps])
+                    .output();
+            }
+            FirewallBackend::None => {
+                tracing::debug!("Would set default policy to {}", policy_str);
+            }
+        }
         Ok(())
     }
 

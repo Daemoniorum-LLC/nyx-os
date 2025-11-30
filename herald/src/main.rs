@@ -1,10 +1,11 @@
 //! # Herald
 //!
-//! Notification system for DaemonOS.
+//! Notification system for DaemonOS with platform-aware display.
 //!
 //! ## Features
 //!
-//! - **Freedesktop Notifications**: D-Bus notification spec
+//! - **Freedesktop Notifications**: D-Bus notification spec (Linux/WSLg)
+//! - **Windows Toast**: Native Windows notifications (WSL)
 //! - **Notification History**: Persistent notification log
 //! - **Do Not Disturb**: Scheduling and manual modes
 //! - **Priority Levels**: Urgent, normal, low
@@ -15,7 +16,10 @@ mod notification;
 mod history;
 mod dnd;
 mod dbus;
+mod display;
 mod ipc;
+
+use libnyx_platform::{Platform, compat::NotificationBackend};
 
 use anyhow::Result;
 use clap::Parser;
@@ -76,9 +80,20 @@ async fn main() -> Result<()> {
     }
 
     // Daemon mode
-    info!("Herald v{} starting", env!("CARGO_PKG_VERSION"));
+    let platform = Platform::detect();
+    let backend = libnyx_platform::compat::notification_backend();
+
+    info!(
+        "Herald v{} starting on {} with {:?} backend",
+        env!("CARGO_PKG_VERSION"),
+        platform.name(),
+        backend
+    );
 
     let config = config::load_config(&args.config)?;
+
+    // Initialize display backend
+    let display = Arc::new(display::NotificationDisplay::new());
 
     // Initialize components
     let history = Arc::new(RwLock::new(history::NotificationHistory::new(&config)?));
@@ -87,13 +102,17 @@ async fn main() -> Result<()> {
         notification::NotificationManager::new(history.clone(), dnd.clone())?
     ));
 
-    // Start D-Bus service
-    let notif_clone = notifications.clone();
-    tokio::spawn(async move {
-        if let Err(e) = dbus::run_dbus_service(notif_clone).await {
-            error!("D-Bus service error: {}", e);
-        }
-    });
+    // Start D-Bus service only on native Linux or WSLg
+    if matches!(backend, NotificationBackend::Freedesktop) {
+        let notif_clone = notifications.clone();
+        tokio::spawn(async move {
+            if let Err(e) = dbus::run_dbus_service(notif_clone).await {
+                error!("D-Bus service error: {}", e);
+            }
+        });
+    } else {
+        info!("D-Bus service skipped (not using Freedesktop backend)");
+    }
 
     // Start IPC server
     let server = ipc::HeraldServer::new(args.socket, notifications, history, dnd);

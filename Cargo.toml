@@ -4,6 +4,7 @@ members = [
     "kernel",
     "libs/libnyx",
     "libs/libnyx-ipc",
+    "libs/libnyx-platform",
     "init",
     "agents/guardian",
     "agents/archon",

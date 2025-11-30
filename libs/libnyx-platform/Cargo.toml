@@ -1,0 +1,12 @@
+[package]
+name = "libnyx-platform"
+version.workspace = true
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+description = "Platform detection and WSL compatibility layer for Nyx"
+repository.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
