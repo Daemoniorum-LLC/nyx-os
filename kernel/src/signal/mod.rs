@@ -564,3 +564,168 @@ pub fn sigwait(tid: ThreadId, set: &SigSet) -> Result<SigInfo, SignalError> {
     // No signal available, would block
     Err(SignalError::InvalidSignal)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_signal_from_raw_valid() {
+        assert_eq!(Signal::from_raw(1), Some(Signal::SIGHUP));
+        assert_eq!(Signal::from_raw(2), Some(Signal::SIGINT));
+        assert_eq!(Signal::from_raw(9), Some(Signal::SIGKILL));
+        assert_eq!(Signal::from_raw(15), Some(Signal::SIGTERM));
+        assert_eq!(Signal::from_raw(19), Some(Signal::SIGSTOP));
+        assert_eq!(Signal::from_raw(31), Some(Signal::SIGSYS));
+    }
+
+    #[test]
+    fn test_signal_from_raw_invalid() {
+        assert_eq!(Signal::from_raw(0), None);
+        assert_eq!(Signal::from_raw(32), None);
+        assert_eq!(Signal::from_raw(64), None);
+        assert_eq!(Signal::from_raw(255), None);
+    }
+
+    #[test]
+    fn test_signal_as_raw() {
+        assert_eq!(Signal::SIGHUP.as_raw(), 1);
+        assert_eq!(Signal::SIGINT.as_raw(), 2);
+        assert_eq!(Signal::SIGKILL.as_raw(), 9);
+        assert_eq!(Signal::SIGTERM.as_raw(), 15);
+        assert_eq!(Signal::SIGSTOP.as_raw(), 19);
+    }
+
+    #[test]
+    fn test_signal_roundtrip() {
+        for i in 1..=31u8 {
+            let signal = Signal::from_raw(i).unwrap();
+            assert_eq!(signal.as_raw(), i);
+        }
+    }
+
+    #[test]
+    fn test_signal_default_action_terminate() {
+        assert_eq!(Signal::SIGHUP.default_action(), DefaultAction::Terminate);
+        assert_eq!(Signal::SIGINT.default_action(), DefaultAction::Terminate);
+        assert_eq!(Signal::SIGKILL.default_action(), DefaultAction::Terminate);
+        assert_eq!(Signal::SIGTERM.default_action(), DefaultAction::Terminate);
+        assert_eq!(Signal::SIGPIPE.default_action(), DefaultAction::Terminate);
+    }
+
+    #[test]
+    fn test_signal_default_action_core_dump() {
+        assert_eq!(Signal::SIGQUIT.default_action(), DefaultAction::CoreDump);
+        assert_eq!(Signal::SIGILL.default_action(), DefaultAction::CoreDump);
+        assert_eq!(Signal::SIGTRAP.default_action(), DefaultAction::CoreDump);
+        assert_eq!(Signal::SIGABRT.default_action(), DefaultAction::CoreDump);
+        assert_eq!(Signal::SIGBUS.default_action(), DefaultAction::CoreDump);
+        assert_eq!(Signal::SIGFPE.default_action(), DefaultAction::CoreDump);
+        assert_eq!(Signal::SIGSEGV.default_action(), DefaultAction::CoreDump);
+    }
+
+    #[test]
+    fn test_signal_default_action_stop() {
+        assert_eq!(Signal::SIGSTOP.default_action(), DefaultAction::Stop);
+        assert_eq!(Signal::SIGTSTP.default_action(), DefaultAction::Stop);
+        assert_eq!(Signal::SIGTTIN.default_action(), DefaultAction::Stop);
+        assert_eq!(Signal::SIGTTOU.default_action(), DefaultAction::Stop);
+    }
+
+    #[test]
+    fn test_signal_default_action_continue() {
+        assert_eq!(Signal::SIGCONT.default_action(), DefaultAction::Continue);
+    }
+
+    #[test]
+    fn test_signal_default_action_ignore() {
+        assert_eq!(Signal::SIGCHLD.default_action(), DefaultAction::Ignore);
+        assert_eq!(Signal::SIGURG.default_action(), DefaultAction::Ignore);
+        assert_eq!(Signal::SIGWINCH.default_action(), DefaultAction::Ignore);
+    }
+
+    #[test]
+    fn test_signal_is_catchable() {
+        assert!(Signal::SIGINT.is_catchable());
+        assert!(Signal::SIGTERM.is_catchable());
+        assert!(Signal::SIGHUP.is_catchable());
+        assert!(Signal::SIGCHLD.is_catchable());
+
+        assert!(!Signal::SIGKILL.is_catchable());
+        assert!(!Signal::SIGSTOP.is_catchable());
+    }
+
+    #[test]
+    fn test_signal_is_synchronous() {
+        assert!(Signal::SIGILL.is_synchronous());
+        assert!(Signal::SIGTRAP.is_synchronous());
+        assert!(Signal::SIGBUS.is_synchronous());
+        assert!(Signal::SIGFPE.is_synchronous());
+        assert!(Signal::SIGSEGV.is_synchronous());
+        assert!(Signal::SIGSYS.is_synchronous());
+
+        assert!(!Signal::SIGINT.is_synchronous());
+        assert!(!Signal::SIGTERM.is_synchronous());
+        assert!(!Signal::SIGKILL.is_synchronous());
+    }
+
+    #[test]
+    fn test_signal_ordering() {
+        assert!(Signal::SIGHUP < Signal::SIGINT);
+        assert!(Signal::SIGINT < Signal::SIGKILL);
+        assert!(Signal::SIGKILL < Signal::SIGTERM);
+    }
+
+    #[test]
+    fn test_default_action_enum() {
+        assert_ne!(DefaultAction::Terminate, DefaultAction::CoreDump);
+        assert_ne!(DefaultAction::Stop, DefaultAction::Continue);
+        assert_ne!(DefaultAction::Ignore, DefaultAction::Terminate);
+    }
+
+    #[test]
+    fn test_process_signal_state_default() {
+        let state = ProcessSignalState::default();
+        assert!(state.pending.is_empty());
+        assert_eq!(state.actions.len(), 64);
+    }
+
+    #[test]
+    fn test_thread_signal_state_default() {
+        let state = ThreadSignalState::default();
+        assert!(state.mask.is_empty());
+        assert!(state.pending.is_empty());
+        assert!(state.alt_stack.is_none());
+        assert!(state.handling.is_none());
+        assert!(state.saved_mask.is_none());
+    }
+
+    #[test]
+    fn test_sigmask_how_enum() {
+        assert_ne!(SigMaskHow::Block, SigMaskHow::Unblock);
+        assert_ne!(SigMaskHow::Unblock, SigMaskHow::SetMask);
+        assert_ne!(SigMaskHow::Block, SigMaskHow::SetMask);
+    }
+
+    #[test]
+    fn test_alt_stack_flags() {
+        let flags = AltStackFlags::ONSTACK | AltStackFlags::AUTODISARM;
+        assert!(flags.contains(AltStackFlags::ONSTACK));
+        assert!(flags.contains(AltStackFlags::AUTODISARM));
+        assert!(!flags.contains(AltStackFlags::DISABLE));
+    }
+
+    #[test]
+    fn test_signal_error_enum() {
+        assert_ne!(SignalError::InvalidSignal, SignalError::ProcessNotFound);
+        assert_ne!(SignalError::ThreadNotFound, SignalError::PermissionDenied);
+        assert_ne!(SignalError::Uncatchable, SignalError::QueueFull);
+    }
+
+    #[test]
+    fn test_sigrt_constants() {
+        assert!(SIGRTMIN < SIGRTMAX);
+        assert_eq!(SIGRTMIN, 32);
+        assert_eq!(SIGRTMAX, 64);
+    }
+}

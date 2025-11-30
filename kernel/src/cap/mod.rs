@@ -354,4 +354,158 @@ mod tests {
         let derived = cap.derive(Rights::READ).unwrap();
         assert_eq!(derived.object_id, cap.object_id);
     }
+
+    #[test]
+    fn test_capability_has_rights() {
+        let cap = unsafe {
+            Capability::new_unchecked(
+                ObjectId::new_test(1),
+                Rights::READ | Rights::WRITE,
+            )
+        };
+
+        assert!(cap.has_rights(Rights::READ));
+        assert!(cap.has_rights(Rights::WRITE));
+        assert!(cap.has_rights(Rights::READ | Rights::WRITE));
+        assert!(!cap.has_rights(Rights::EXECUTE));
+        assert!(!cap.has_rights(Rights::GRANT));
+    }
+
+    #[test]
+    fn test_capability_require_success() {
+        let cap = unsafe {
+            Capability::new_unchecked(
+                ObjectId::new_test(1),
+                Rights::READ | Rights::WRITE,
+            )
+        };
+
+        assert!(cap.require(Rights::READ).is_ok());
+        assert!(cap.require(Rights::WRITE).is_ok());
+        assert!(cap.require(Rights::READ | Rights::WRITE).is_ok());
+    }
+
+    #[test]
+    fn test_capability_require_failure() {
+        let cap = unsafe {
+            Capability::new_unchecked(
+                ObjectId::new_test(1),
+                Rights::READ,
+            )
+        };
+
+        let result = cap.require(Rights::WRITE);
+        assert!(matches!(result, Err(CapError::InsufficientRights { .. })));
+    }
+
+    #[test]
+    fn test_derive_empty_rights_fails() {
+        let cap = unsafe {
+            Capability::new_unchecked(
+                ObjectId::new_test(1),
+                Rights::GRANT,
+            )
+        };
+
+        // Deriving with empty mask should fail
+        let result = cap.derive(Rights::empty());
+        assert!(matches!(result, Err(CapError::EmptyRights)));
+    }
+
+    #[test]
+    fn test_derive_with_grant_passthrough() {
+        let cap = unsafe {
+            Capability::new_unchecked(
+                ObjectId::new_test(1),
+                Rights::READ | Rights::WRITE | Rights::GRANT,
+            )
+        };
+
+        let derived = cap.derive_with_grant(Rights::READ | Rights::GRANT).unwrap();
+        assert!(derived.rights.contains(Rights::READ));
+        assert!(derived.rights.contains(Rights::GRANT));
+    }
+
+    #[test]
+    fn test_derive_with_grant_requires_grant() {
+        let cap = unsafe {
+            Capability::new_unchecked(
+                ObjectId::new_test(1),
+                Rights::READ | Rights::WRITE, // No GRANT
+            )
+        };
+
+        let result = cap.derive_with_grant(Rights::READ);
+        assert!(matches!(result, Err(CapError::NoGrantRight)));
+    }
+
+    #[test]
+    fn test_capability_equality() {
+        let cap1 = unsafe {
+            Capability::new_unchecked(
+                ObjectId::new_test(1),
+                Rights::READ,
+            )
+        };
+
+        let cap2 = unsafe {
+            Capability::new_unchecked(
+                ObjectId::new_test(1),
+                Rights::READ,
+            )
+        };
+
+        // Note: generation might differ, so we compare object_id and rights
+        assert_eq!(cap1.object_id, cap2.object_id);
+        assert_eq!(cap1.rights, cap2.rights);
+    }
+
+    #[test]
+    fn test_cap_error_variants() {
+        let err1 = CapError::NoGrantRight;
+        let err2 = CapError::EmptyRights;
+        let err3 = CapError::Revoked;
+        let err4 = CapError::ObjectNotFound;
+        let err5 = CapError::QuotaExceeded;
+        let err6 = CapError::InvalidSlot;
+
+        assert_ne!(err1, err2);
+        assert_ne!(err2, err3);
+        assert_ne!(err3, err4);
+        assert_ne!(err4, err5);
+        assert_ne!(err5, err6);
+    }
+
+    #[test]
+    fn test_cap_error_insufficient_rights() {
+        let err = CapError::InsufficientRights {
+            required: Rights::WRITE,
+            actual: Rights::READ,
+        };
+
+        if let CapError::InsufficientRights { required, actual } = err {
+            assert!(required.contains(Rights::WRITE));
+            assert!(actual.contains(Rights::READ));
+        } else {
+            panic!("Expected InsufficientRights");
+        }
+    }
+
+    #[test]
+    fn test_derive_intersection_with_mask() {
+        let cap = unsafe {
+            Capability::new_unchecked(
+                ObjectId::new_test(1),
+                Rights::READ | Rights::WRITE | Rights::EXECUTE | Rights::GRANT,
+            )
+        };
+
+        // Ask for READ | EXECUTE, but cap has READ | WRITE | EXECUTE
+        let derived = cap.derive(Rights::READ | Rights::EXECUTE).unwrap();
+
+        assert!(derived.rights.contains(Rights::READ));
+        assert!(derived.rights.contains(Rights::EXECUTE));
+        assert!(!derived.rights.contains(Rights::WRITE));
+        assert!(!derived.rights.contains(Rights::GRANT)); // GRANT is stripped
+    }
 }
