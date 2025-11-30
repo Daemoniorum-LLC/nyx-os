@@ -5,6 +5,8 @@ members = [
     "libs/libnyx",
     "libs/libnyx-ipc",
     "libs/libnyx-platform",
+    "libs/grimoire-core",
+    "libs/grimoire-client",
     "init",
     "nyx-serviced",
     "spectre",

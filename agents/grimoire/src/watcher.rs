@@ -240,6 +240,59 @@ pub struct DirectoryWatcher {
     event_tx: mpsc::Sender<(PathBuf, ConfigEvent)>,
 }
 
+/// Settings watcher that automatically reloads the settings store
+pub struct SettingsWatcher {
+    directories: Vec<PathBuf>,
+    store: Arc<RwLock<crate::store::SettingsStore>>,
+}
+
+impl SettingsWatcher {
+    /// Create a new settings watcher
+    pub fn new(
+        directories: Vec<PathBuf>,
+        store: Arc<RwLock<crate::store::SettingsStore>>,
+    ) -> Result<Self> {
+        Ok(Self { directories, store })
+    }
+
+    /// Run the watcher
+    pub async fn run(&self) {
+        let (mut watcher, mut rx) = ConfigWatcher::new(500);
+
+        if let Err(e) = watcher.start() {
+            tracing::error!("Failed to start watcher: {}", e);
+            return;
+        }
+
+        // Watch all directories
+        for dir in &self.directories {
+            if dir.exists() {
+                if let Err(e) = watcher.watch(dir).await {
+                    tracing::warn!("Failed to watch {:?}: {}", dir, e);
+                }
+            }
+        }
+
+        // Process events
+        while let Some(event) = rx.recv().await {
+            match event {
+                ConfigEvent::Modified(path) | ConfigEvent::Created(path) => {
+                    tracing::info!("Config changed: {:?}", path);
+                    if let Err(e) = self.store.write().await.load().await {
+                        tracing::error!("Failed to reload settings: {}", e);
+                    }
+                }
+                ConfigEvent::Deleted(path) => {
+                    tracing::info!("Config deleted: {:?}", path);
+                }
+                ConfigEvent::Error(e) => {
+                    tracing::error!("Watcher error: {}", e);
+                }
+            }
+        }
+    }
+}
+
 impl DirectoryWatcher {
     pub fn new(
         directory: PathBuf,

@@ -1,0 +1,32 @@
+[package]
+name = "grimoire-client"
+version = "0.1.0"
+edition = "2024"
+authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
+license = "MIT OR Apache-2.0"
+description = "Client library for the Grimoire daemon"
+keywords = ["persona", "ai", "daemon", "ipc"]
+categories = ["api-bindings"]
+
+[dependencies]
+# Shared types
+grimoire-core = { path = "../grimoire-core" }
+
+# Async runtime
+tokio = { version = "1.42", features = ["net", "io-util", "sync"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+
+[features]
+default = []
+# Use mock instead of real daemon (for testing on non-DaemonOS)
+mock = []

@@ -366,3 +366,45 @@ impl<T: SchemaType> SchemaType for Vec<T> {
         ValueType::Array(Box::new(T::value_type()))
     }
 }
+
+/// Schema registry that loads and manages schemas
+pub struct SchemaRegistry {
+    validator: SchemaValidator,
+}
+
+impl SchemaRegistry {
+    /// Create a new registry and load schemas from a directory
+    pub fn new(schemas_dir: &std::path::Path) -> Result<Self> {
+        let mut registry = Self {
+            validator: SchemaValidator::new(),
+        };
+
+        // Load schemas from directory if it exists
+        if schemas_dir.exists() {
+            for entry in std::fs::read_dir(schemas_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+
+                if path.extension().map(|e| e == "yaml" || e == "yml").unwrap_or(false) {
+                    let content = std::fs::read_to_string(&path)?;
+                    let schema: SettingsSchema = serde_yaml::from_str(&content)?;
+                    registry.validator.register(schema);
+                }
+            }
+        }
+
+        Ok(registry)
+    }
+
+    /// Create an empty registry (for when schemas can't be loaded)
+    pub fn empty() -> Self {
+        Self {
+            validator: SchemaValidator::new(),
+        }
+    }
+
+    /// Get the validator
+    pub fn validator(&self) -> &SchemaValidator {
+        &self.validator
+    }
+}
