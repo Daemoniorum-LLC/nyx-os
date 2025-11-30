@@ -5,7 +5,7 @@
 //! - Hardware interrupts (32-47): Timer, keyboard, etc.
 //! - Software interrupts (48-255): Syscalls, etc.
 
-use core::arch::asm;
+use core::arch::{asm, naked_asm};
 use spin::Lazy;
 
 use super::gdt;
@@ -177,405 +177,255 @@ pub struct InterruptStackFrameWithError {
 // Exception Handlers
 // =============================================================================
 
-macro_rules! interrupt_handler {
-    ($name:ident) => {
-        #[unsafe(naked)]
-        extern "C" fn $name() {
-            unsafe {
-                asm!(
-                    // Save all registers
-                    "push rax",
-                    "push rbx",
-                    "push rcx",
-                    "push rdx",
-                    "push rsi",
-                    "push rdi",
-                    "push rbp",
-                    "push r8",
-                    "push r9",
-                    "push r10",
-                    "push r11",
-                    "push r12",
-                    "push r13",
-                    "push r14",
-                    "push r15",
-                    // Call Rust handler
-                    "mov rdi, rsp",      // Pass stack frame pointer
-                    "call {handler}",
-                    // Restore registers
-                    "pop r15",
-                    "pop r14",
-                    "pop r13",
-                    "pop r12",
-                    "pop r11",
-                    "pop r10",
-                    "pop r9",
-                    "pop r8",
-                    "pop rbp",
-                    "pop rdi",
-                    "pop rsi",
-                    "pop rdx",
-                    "pop rcx",
-                    "pop rbx",
-                    "pop rax",
-                    "iretq",
-                    handler = sym concat_idents!($name, _inner),
-                    options(noreturn)
-                )
-            }
-        }
-    };
-}
-
-macro_rules! interrupt_handler_with_error {
-    ($name:ident) => {
-        #[unsafe(naked)]
-        extern "C" fn $name() {
-            unsafe {
-                asm!(
-                    // Error code is already on stack
-                    // Save all registers
-                    "push rax",
-                    "push rbx",
-                    "push rcx",
-                    "push rdx",
-                    "push rsi",
-                    "push rdi",
-                    "push rbp",
-                    "push r8",
-                    "push r9",
-                    "push r10",
-                    "push r11",
-                    "push r12",
-                    "push r13",
-                    "push r14",
-                    "push r15",
-                    // Call Rust handler
-                    "mov rdi, rsp",
-                    "call {handler}",
-                    // Restore registers
-                    "pop r15",
-                    "pop r14",
-                    "pop r13",
-                    "pop r12",
-                    "pop r11",
-                    "pop r10",
-                    "pop r9",
-                    "pop r8",
-                    "pop rbp",
-                    "pop rdi",
-                    "pop rsi",
-                    "pop rdx",
-                    "pop rcx",
-                    "pop rbx",
-                    "pop rax",
-                    // Pop error code
-                    "add rsp, 8",
-                    "iretq",
-                    handler = sym concat_idents!($name, _inner),
-                    options(noreturn)
-                )
-            }
-        }
-    };
-}
-
-// Use simpler approach without macros for now
+// Individual exception handlers using naked_asm!
 #[unsafe(naked)]
-extern "C" fn divide_error() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn divide_error() {
+    naked_asm!(
             "push 0",  // Fake error code for uniform handling
             "push 0",  // Exception number
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn debug() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn debug() {
+    naked_asm!(
             "push 0",
             "push 1",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn nmi() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn nmi() {
+    naked_asm!(
             "push 0",
             "push 2",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn breakpoint() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn breakpoint() {
+    naked_asm!(
             "push 0",
             "push 3",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn overflow() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn overflow() {
+    naked_asm!(
             "push 0",
             "push 4",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn bound_range() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn bound_range() {
+    naked_asm!(
             "push 0",
             "push 5",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn invalid_opcode() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn invalid_opcode() {
+    naked_asm!(
             "push 0",
             "push 6",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn device_not_available() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn device_not_available() {
+    naked_asm!(
             "push 0",
             "push 7",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn double_fault() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn double_fault() {
+    naked_asm!(
             // Error code already pushed by CPU
             "push 8",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn invalid_tss() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn invalid_tss() {
+    naked_asm!(
             "push 10",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn segment_not_present() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn segment_not_present() {
+    naked_asm!(
             "push 11",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn stack_segment() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn stack_segment() {
+    naked_asm!(
             "push 12",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn general_protection() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn general_protection() {
+    naked_asm!(
             "push 13",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn page_fault() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn page_fault() {
+    naked_asm!(
             "push 14",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn x87_floating_point() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn x87_floating_point() {
+    naked_asm!(
             "push 0",
             "push 16",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn alignment_check() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn alignment_check() {
+    naked_asm!(
             "push 17",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn machine_check() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn machine_check() {
+    naked_asm!(
             "push 0",
             "push 18",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn simd_floating_point() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn simd_floating_point() {
+    naked_asm!(
             "push 0",
             "push 19",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn virtualization() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn virtualization() {
+    naked_asm!(
             "push 0",
             "push 20",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn control_protection() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn control_protection() {
+    naked_asm!(
             "push 21",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn hypervisor_injection() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn hypervisor_injection() {
+    naked_asm!(
             "push 0",
             "push 28",
             "jmp {common}",
             common = sym exception_common,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn vmm_communication() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn vmm_communication() {
+    naked_asm!(
             "push 29",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 #[unsafe(naked)]
-extern "C" fn security_exception() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn security_exception() {
+    naked_asm!(
             "push 30",
             "jmp {common}",
             common = sym exception_common_with_error,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 /// Common exception handler (no error code)
 #[unsafe(naked)]
-extern "C" fn exception_common() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn exception_common() {
+    naked_asm!(
             // Save all general-purpose registers
             "push rax",
             "push rbx",
@@ -616,16 +466,14 @@ extern "C" fn exception_common() {
             "add rsp, 16",
             "iretq",
             handler = sym exception_handler_rust,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 /// Common exception handler (with error code)
 #[unsafe(naked)]
-extern "C" fn exception_common_with_error() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn exception_common_with_error() {
+    naked_asm!(
             // Save all general-purpose registers
             "push rax",
             "push rbx",
@@ -666,9 +514,8 @@ extern "C" fn exception_common_with_error() {
             "add rsp, 16",
             "iretq",
             handler = sym exception_handler_rust,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 /// Saved CPU state during exception
@@ -782,47 +629,45 @@ extern "C" fn exception_handler_rust(frame: &ExceptionFrame) {
 macro_rules! irq_handler {
     ($name:ident, $irq:expr) => {
         #[unsafe(naked)]
-        extern "C" fn $name() {
-            unsafe {
-                asm!(
-                    "push rax",
-                    "push rbx",
-                    "push rcx",
-                    "push rdx",
-                    "push rsi",
-                    "push rdi",
-                    "push rbp",
-                    "push r8",
-                    "push r9",
-                    "push r10",
-                    "push r11",
-                    "push r12",
-                    "push r13",
-                    "push r14",
-                    "push r15",
-                    "mov rdi, {irq}",
-                    "call {handler}",
-                    "pop r15",
-                    "pop r14",
-                    "pop r13",
-                    "pop r12",
-                    "pop r11",
-                    "pop r10",
-                    "pop r9",
-                    "pop r8",
-                    "pop rbp",
-                    "pop rdi",
-                    "pop rsi",
-                    "pop rdx",
-                    "pop rcx",
-                    "pop rbx",
-                    "pop rax",
-                    "iretq",
-                    irq = const $irq,
-                    handler = sym irq_handler_rust,
-                    options(noreturn)
-                )
-            }
+        unsafe extern "C" fn $name() {
+            naked_asm!(
+                "push rax",
+                "push rbx",
+                "push rcx",
+                "push rdx",
+                "push rsi",
+                "push rdi",
+                "push rbp",
+                "push r8",
+                "push r9",
+                "push r10",
+                "push r11",
+                "push r12",
+                "push r13",
+                "push r14",
+                "push r15",
+                "mov rdi, {irq}",
+                "call {handler}",
+                "pop r15",
+                "pop r14",
+                "pop r13",
+                "pop r12",
+                "pop r11",
+                "pop r10",
+                "pop r9",
+                "pop r8",
+                "pop rbp",
+                "pop rdi",
+                "pop rsi",
+                "pop rdx",
+                "pop rcx",
+                "pop rbx",
+                "pop rax",
+                "iretq",
+                irq = const $irq,
+                handler = sym irq_handler_rust,
+                
+            )
         }
     };
 }
@@ -881,9 +726,8 @@ fn send_eoi(irq: u8) {
 // =============================================================================
 
 #[unsafe(naked)]
-extern "C" fn syscall_interrupt() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn syscall_interrupt() {
+    naked_asm!(
             "push rax",
             "push rbx",
             "push rcx",
@@ -919,9 +763,8 @@ extern "C" fn syscall_interrupt() {
             "pop rax",
             "iretq",
             handler = sym syscall_handler_rust,
-            options(noreturn)
-        )
-    }
+            
+    )
 }
 
 extern "C" fn syscall_handler_rust(_frame: &ExceptionFrame) {
@@ -930,11 +773,9 @@ extern "C" fn syscall_handler_rust(_frame: &ExceptionFrame) {
 }
 
 #[unsafe(naked)]
-extern "C" fn spurious() {
-    unsafe {
-        asm!(
+unsafe extern "C" fn spurious() {
+    naked_asm!(
             "iretq",
-            options(noreturn)
-        )
-    }
+            
+    )
 }
