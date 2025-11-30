@@ -721,3 +721,88 @@ impl ProgramHeader {
         })
     }
 }
+
+// ============================================================================
+// Signal-related process control
+// ============================================================================
+
+/// Get current PID (alias for signal module)
+pub fn current_pid() -> Option<ProcessId> {
+    current_process_id()
+}
+
+/// Terminate a process (for signal delivery)
+pub fn terminate(pid: ProcessId, exit_code: i32) {
+    log::info!("Terminating process {:?} with exit code {}", pid, exit_code);
+
+    let mut processes = PROCESSES.write();
+    if let Some(proc) = processes.get_mut(&pid) {
+        proc.state = ProcessState::Zombie(exit_code);
+        proc.exit_code = exit_code;
+
+        // Terminate all threads
+        for thread_id in &proc.threads {
+            let mut threads = crate::sched::THREADS.write();
+            if let Some(thread) = threads.get_mut(thread_id) {
+                thread.state = ThreadState::Terminated;
+            }
+        }
+    }
+
+    // Trigger reschedule if we killed the current process
+    if current_process_id() == Some(pid) {
+        drop(processes);
+        crate::sched::schedule();
+    }
+}
+
+/// Stop a process (SIGSTOP/SIGTSTP)
+pub fn stop(pid: ProcessId) {
+    log::info!("Stopping process {:?}", pid);
+
+    let mut processes = PROCESSES.write();
+    if let Some(proc) = processes.get_mut(&pid) {
+        proc.state = ProcessState::Stopped;
+
+        // Stop all threads
+        for thread_id in &proc.threads {
+            let mut threads = crate::sched::THREADS.write();
+            if let Some(thread) = threads.get_mut(thread_id) {
+                thread.state = ThreadState::Blocked;
+            }
+        }
+    }
+
+    // Trigger reschedule if we stopped the current process
+    if current_process_id() == Some(pid) {
+        drop(processes);
+        crate::sched::schedule();
+    }
+}
+
+/// Resume a stopped process (SIGCONT)
+pub fn resume(pid: ProcessId) {
+    log::info!("Resuming process {:?}", pid);
+
+    let mut processes = PROCESSES.write();
+    if let Some(proc) = processes.get_mut(&pid) {
+        if proc.state == ProcessState::Stopped {
+            proc.state = ProcessState::Running;
+
+            // Make threads runnable again
+            for thread_id in &proc.threads {
+                let mut threads = crate::sched::THREADS.write();
+                if let Some(thread) = threads.get_mut(thread_id) {
+                    thread.state = ThreadState::Ready;
+
+                    // Re-enqueue thread
+                    let cpu_id = 0u32; // Simplified
+                    let mut per_cpu = crate::sched::PER_CPU.write();
+                    if let Some(cpu_sched) = per_cpu.get_mut(cpu_id as usize) {
+                        cpu_sched.enqueue(*thread_id);
+                    }
+                }
+            }
+        }
+    }
+}

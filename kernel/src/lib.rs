@@ -35,6 +35,7 @@ pub mod mem;
 pub mod net;
 pub mod process;
 pub mod sched;
+pub mod signal;
 pub mod tensor;
 pub mod timetravel;
 
@@ -108,22 +109,26 @@ pub unsafe fn kernel_main(boot_info: &arch::BootInfo) -> ! {
     log::debug!("Initializing network stack");
     net::init();
 
-    // Phase 11: Load initrd
+    // Phase 11: Signal subsystem
+    log::debug!("Initializing signal subsystem");
+    signal::init();
+
+    // Phase 12: Load initrd
     if let Some(initrd) = boot_info.initrd {
         log::info!("Loading initrd ({} bytes)", initrd.len());
         let initrd_phys = mem::PhysAddr::new(initrd.as_ptr() as u64);
         fs::init_initrd(initrd_phys, initrd.len());
     }
 
-    // Phase 12: Start secondary CPUs
+    // Phase 13: Start secondary CPUs
     log::debug!("Starting secondary CPUs");
     arch::start_secondary_cpus();
 
-    // Phase 13: Load init process
+    // Phase 14: Load init process
     log::info!("Loading init process");
     let init_cap = load_init_process(boot_info);
 
-    // Phase 14: Start scheduler - never returns
+    // Phase 15: Start scheduler - never returns
     log::info!("Starting scheduler");
     sched::start(init_cap)
 }
