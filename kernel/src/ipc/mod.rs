@@ -41,7 +41,7 @@ pub fn init() {
 }
 
 /// Create a new IPC ring for a thread
-pub fn create_ring(sq_size: u32, cq_size: u32) -> Result<IpcRing, IpcError> {
+pub fn create_ring(sq_size: u32, cq_size: u32, _flags: u32) -> Result<Capability, IpcError> {
     // Validate sizes (must be power of 2)
     if !sq_size.is_power_of_two() || !cq_size.is_power_of_two() {
         return Err(IpcError::InvalidSize);
@@ -52,7 +52,14 @@ pub fn create_ring(sq_size: u32, cq_size: u32) -> Result<IpcRing, IpcError> {
         return Err(IpcError::InvalidSize);
     }
 
-    IpcRing::new(sq_size, cq_size)
+    let _ring = IpcRing::new(sq_size, cq_size)?;
+    let object_id = ObjectId::new(ObjectType::IpcRing);
+
+    let cap = unsafe {
+        Capability::new_unchecked(object_id, Rights::IPC_FULL)
+    };
+
+    Ok(cap)
 }
 
 /// Create a new IPC endpoint
@@ -546,4 +553,119 @@ fn error_to_code(err: &IpcError) -> i64 {
         IpcError::Disconnected => -10,
         IpcError::InvalidOperation => -11,
     }
+}
+
+// ============================================================================
+// High-Level Syscall Interface Functions
+// ============================================================================
+
+/// Enter IPC ring and process operations
+pub fn ring_enter(
+    _ring_id: ObjectId,
+    _to_submit: u32,
+    _min_complete: u32,
+) -> Result<u32, IpcError> {
+    // Ring processing would happen here
+    // For now, return 0 completions
+    Ok(0)
+}
+
+/// Send a message to an endpoint
+pub fn send(
+    dest_id: ObjectId,
+    data: &[u8],
+    _timeout: Option<core::time::Duration>,
+) -> Result<(), IpcError> {
+    let endpoints = ENDPOINTS.read();
+    let endpoint = endpoints
+        .get(&dest_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    let msg = Message::simple(0, data);
+    endpoint.send(msg)
+}
+
+/// Receive a message from an endpoint
+pub fn receive(
+    src_id: ObjectId,
+    _timeout: Option<core::time::Duration>,
+) -> Result<alloc::vec::Vec<u8>, IpcError> {
+    let endpoints = ENDPOINTS.read();
+    let endpoint = endpoints
+        .get(&src_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    let msg = endpoint.receive()?;
+    Ok(msg.data)
+}
+
+/// Synchronous call: send request and wait for reply
+pub fn call(
+    dest_id: ObjectId,
+    request: &[u8],
+) -> Result<alloc::vec::Vec<u8>, IpcError> {
+    // Send request
+    send(dest_id, request, None)?;
+
+    // Wait for reply
+    receive(dest_id, None)
+}
+
+/// Reply to an incoming call
+pub fn reply(
+    reply_id: ObjectId,
+    data: &[u8],
+) -> Result<(), IpcError> {
+    send(reply_id, data, None)
+}
+
+/// Signal notification bits
+pub fn signal(
+    notif_id: ObjectId,
+    bits: u64,
+) -> Result<(), IpcError> {
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    notification.signal(bits);
+    Ok(())
+}
+
+/// Wait for notification bits
+pub fn wait(
+    notif_id: ObjectId,
+    mask: u64,
+    timeout: Option<core::time::Duration>,
+) -> Result<u64, IpcError> {
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    if let Some(duration) = timeout {
+        let timeout_ns = duration.as_nanos() as u64;
+        let bits = notification.wait_timeout(mask, timeout_ns);
+        if bits != 0 {
+            Ok(bits)
+        } else {
+            Err(IpcError::Timeout)
+        }
+    } else {
+        Ok(notification.wait(mask))
+    }
+}
+
+/// Poll notification bits (non-blocking)
+pub fn poll(
+    notif_id: ObjectId,
+    mask: u64,
+) -> Result<u64, IpcError> {
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    Ok(notification.poll(mask))
 }

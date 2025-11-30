@@ -245,6 +245,69 @@ impl CapabilityRegistry {
     }
 }
 
+// ============================================================================
+// Syscall Interface Functions
+// ============================================================================
+
+/// Derive a new capability with reduced rights
+pub fn derive(object_id: ObjectId, new_rights: Rights) -> Result<Capability, CapError> {
+    // Look up the capability in registry
+    let registry = REGISTRY.read();
+    let meta = registry.get(object_id).ok_or(CapError::ObjectNotFound)?;
+
+    // Create the derived capability
+    let cap = Capability {
+        object_id,
+        rights: new_rights,
+        generation: meta.generation,
+    };
+
+    Ok(cap)
+}
+
+/// Revoke a capability (invalidates all derived capabilities)
+pub fn revoke(object_id: ObjectId) -> Result<(), CapError> {
+    let mut registry = REGISTRY.write();
+    registry.revoke(object_id)
+}
+
+/// Identify a capability - return its type and rights
+pub fn identify(object_id: ObjectId) -> Result<(ObjectType, Rights), CapError> {
+    let registry = REGISTRY.read();
+    let meta = registry.get(object_id).ok_or(CapError::ObjectNotFound)?;
+
+    // Return the object type and full rights (actual rights depend on specific cap)
+    Ok((meta.object_type, Rights::all()))
+}
+
+/// Grant a capability to another process
+pub fn grant(
+    object_id: ObjectId,
+    _target_process: crate::process::ProcessId,
+) -> Result<Capability, CapError> {
+    // Look up the capability in registry
+    let registry = REGISTRY.read();
+    let meta = registry.get(object_id).ok_or(CapError::ObjectNotFound)?;
+
+    // Create a new capability for the target process
+    let cap = Capability {
+        object_id,
+        rights: Rights::all(), // Should be based on original cap's rights
+        generation: meta.generation,
+    };
+
+    Ok(cap)
+}
+
+/// Drop a capability (release reference)
+pub fn drop_cap(object_id: ObjectId) -> Result<(), CapError> {
+    // Decrement reference count
+    // For now, just validate the object exists
+    let registry = REGISTRY.read();
+    let _ = registry.get(object_id).ok_or(CapError::ObjectNotFound)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

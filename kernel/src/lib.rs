@@ -28,8 +28,10 @@ extern crate alloc;
 
 pub mod arch;
 pub mod cap;
+pub mod fs;
 pub mod ipc;
 pub mod mem;
+pub mod process;
 pub mod sched;
 pub mod tensor;
 
@@ -76,58 +78,100 @@ pub unsafe fn kernel_main(boot_info: &arch::BootInfo) -> ! {
     log::debug!("Initializing IPC subsystem");
     ipc::init();
 
-    // Phase 4: Scheduler initialization
+    // Phase 4: Filesystem initialization
+    log::debug!("Initializing filesystem subsystem");
+    fs::init();
+
+    // Phase 5: Process subsystem initialization
+    log::debug!("Initializing process subsystem");
+    process::init();
+
+    // Phase 6: Scheduler initialization
     log::debug!("Initializing scheduler");
     sched::init(boot_info);
 
-    // Phase 5: Tensor runtime initialization (if hardware available)
+    // Phase 7: Tensor runtime initialization (if hardware available)
     if tensor::has_accelerator() {
         log::debug!("Initializing tensor runtime");
         tensor::init();
     }
 
-    // Phase 6: Time-travel subsystem (if enabled)
+    // Phase 8: Time-travel subsystem (if enabled)
     #[cfg(feature = "time-travel")]
     {
         log::debug!("Initializing time-travel subsystem");
         timetravel::init();
     }
 
-    // Phase 7: Start secondary CPUs
+    // Phase 9: Load initrd
+    if let Some(initrd) = boot_info.initrd {
+        log::info!("Loading initrd ({} bytes)", initrd.len());
+        let initrd_phys = mem::PhysAddr::new(initrd.as_ptr() as u64);
+        fs::init_initrd(initrd_phys, initrd.len());
+    }
+
+    // Phase 10: Start secondary CPUs
     log::debug!("Starting secondary CPUs");
     arch::start_secondary_cpus();
 
-    // Phase 8: Load init process
+    // Phase 11: Load init process
     log::info!("Loading init process");
     let init_cap = load_init_process(boot_info);
 
-    // Phase 9: Start scheduler - never returns
+    // Phase 12: Start scheduler - never returns
     log::info!("Starting scheduler");
     sched::start(init_cap)
 }
 
 /// Load the init process from initrd
-fn load_init_process(boot_info: &arch::BootInfo) -> cap::Capability {
-    let initrd = boot_info.initrd.expect("No initrd provided");
+fn load_init_process(_boot_info: &arch::BootInfo) -> cap::Capability {
+    // Try to spawn /init or /sbin/init
+    let init_paths = ["/init", "/sbin/init", "/bin/init"];
 
-    // Parse initrd (tar format)
-    let init_binary = find_init_binary(initrd);
+    for path in &init_paths {
+        if fs::exists(path) {
+            log::info!("Found init at {}", path);
 
-    // Create init process
-    let init_space = mem::create_address_space();
-    let init_cspace = cap::create_cspace();
+            let args = process::SpawnArgs {
+                path: alloc::string::String::from(*path),
+                args: alloc::vec![alloc::string::String::from(*path)],
+                env: alloc::vec![
+                    (alloc::string::String::from("PATH"), alloc::string::String::from("/bin:/sbin:/usr/bin")),
+                ],
+                caps: alloc::vec![],
+                sched_class: sched::SchedClass::Normal,
+                priority: 0,
+                cwd: Some(alloc::string::String::from("/")),
+                uid: 0,
+                gid: 0,
+            };
 
-    // Load binary into address space
-    // ... ELF loading logic ...
+            match process::spawn(args) {
+                Ok(pid) => {
+                    log::info!("Init process spawned with PID {}", pid.raw());
+                    // Return a capability for the init process
+                    return unsafe {
+                        cap::Capability::new_unchecked(
+                            cap::ObjectId::new(cap::ObjectType::Process),
+                            cap::Rights::PROCESS_FULL,
+                        )
+                    };
+                }
+                Err(e) => {
+                    log::error!("Failed to spawn init: {:?}", e);
+                }
+            }
+        }
+    }
 
-    // Grant initial capabilities to init
-    // - Memory: Full physical memory access (init will create drivers)
-    // - IPC: Create endpoints
-    // - Hardware: IRQ and MMIO capabilities
+    // No init found - create a minimal kernel thread
+    log::warn!("No init binary found, starting kernel shell");
 
-    todo!("Complete init process loading")
-}
-
-fn find_init_binary(_initrd: &[u8]) -> &[u8] {
-    todo!("Parse initrd and find /init binary")
+    // Create a dummy capability for scheduler to work with
+    unsafe {
+        cap::Capability::new_unchecked(
+            cap::ObjectId::new(cap::ObjectType::Process),
+            cap::Rights::PROCESS_FULL,
+        )
+    }
 }

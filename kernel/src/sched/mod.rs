@@ -23,10 +23,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::RwLock;
 
 /// Global thread registry
-static THREADS: RwLock<BTreeMap<ThreadId, Thread>> = RwLock::new(BTreeMap::new());
+pub static THREADS: RwLock<BTreeMap<ThreadId, Thread>> = RwLock::new(BTreeMap::new());
 
 /// Per-CPU scheduler state
-static PER_CPU: RwLock<alloc::vec::Vec<CpuScheduler>> = RwLock::new(alloc::vec::Vec::new());
+pub static PER_CPU: RwLock<alloc::vec::Vec<CpuScheduler>> = RwLock::new(alloc::vec::Vec::new());
 
 /// Need reschedule flag (per-CPU, but simplified for now)
 static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
@@ -183,7 +183,7 @@ fn run_thread(_thread_id: ThreadId) {
 }
 
 /// Get current CPU ID
-fn current_cpu_id() -> u32 {
+pub fn current_cpu_id() -> u32 {
     crate::arch::x86_64::smp::current_cpu_id()
 }
 
@@ -348,7 +348,7 @@ fn idle() {
 }
 
 /// Per-CPU scheduler state
-struct CpuScheduler {
+pub struct CpuScheduler {
     cpu_id: u32,
     /// Currently running thread
     current: Option<ThreadId>,
@@ -374,7 +374,7 @@ impl CpuScheduler {
         }
     }
 
-    fn enqueue(&mut self, thread_id: ThreadId) {
+    pub fn enqueue(&mut self, thread_id: ThreadId) {
         // Check thread scheduling class
         let threads = THREADS.read();
         if let Some(thread) = threads.get(&thread_id) {

@@ -32,6 +32,11 @@ impl ObjectId {
         self.0
     }
 
+    /// Get the raw ID value as u64 (alias for raw)
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+
     /// Create from raw value (for deserialization)
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)

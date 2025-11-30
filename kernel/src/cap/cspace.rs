@@ -98,6 +98,41 @@ impl CSpace {
         }
         Ok(())
     }
+
+    /// Insert capability at next available slot, returning the slot number
+    pub fn insert_next(&mut self, cap: Capability) -> Result<u32, CSpaceError> {
+        if self.count >= self.quota {
+            return Err(CSpaceError::QuotaExceeded);
+        }
+
+        // Find first empty slot
+        for i in 0..CNODE_SIZE {
+            if matches!(self.root.slots[i], CSlot::Empty) {
+                self.root.slots[i] = CSlot::Cap(cap);
+                self.count += 1;
+                return Ok(i as u32);
+            }
+        }
+
+        Err(CSpaceError::QuotaExceeded)
+    }
+
+    /// Get capability by slot
+    pub fn get(&self, slot: u32) -> Option<&Capability> {
+        self.lookup(slot as usize)
+    }
+
+    /// Clone the CSpace (for fork)
+    pub fn clone_cspace(&self) -> Self {
+        let mut new_cspace = Self::new(self.quota);
+        for i in 0..CNODE_SIZE {
+            if let CSlot::Cap(cap) = &self.root.slots[i] {
+                new_cspace.root.slots[i] = CSlot::Cap(*cap);
+                new_cspace.count += 1;
+            }
+        }
+        new_cspace
+    }
 }
 
 impl CNode {
