@@ -218,7 +218,6 @@ nyx/
 
 - Bootable ISO generation
 - Graphical installer
-- Tonalpohualli calendar-based authorization integration
 - Container runtime (OCI compatible)
 
 ## License
