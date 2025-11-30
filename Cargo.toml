@@ -16,6 +16,7 @@ members = [
     "wraith",
     "cipher",
     "scribe",
+    "chronos",
     "agents/guardian",
     "agents/archon",
     "agents/arachne",

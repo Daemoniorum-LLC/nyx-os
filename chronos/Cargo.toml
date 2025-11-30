@@ -1,0 +1,47 @@
+[package]
+name = "chronos"
+version = "0.1.0"
+edition = "2021"
+authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
+license = "MIT OR Apache-2.0"
+description = "Chronos - Time and NTP daemon for DaemonOS"
+
+[[bin]]
+name = "chronosd"
+path = "src/main.rs"
+
+[[bin]]
+name = "chronosctl"
+path = "src/ctl.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.42", features = ["full", "time", "net"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utils
+anyhow = "1.0"
+thiserror = "2.0"
+clap = { version = "4.5", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+
+# System
+nix = { version = "0.29", features = ["time"] }
+libc = "0.2"
+
+# IPC
+libnyx-ipc = { path = "../libs/libnyx-ipc" }
+
+[features]
+default = []
+# Enable hardware RTC support
+rtc = []
