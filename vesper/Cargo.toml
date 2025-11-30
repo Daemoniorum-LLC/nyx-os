@@ -1,0 +1,22 @@
+[package]
+name = "vesper"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Vesper - Audio daemon for DaemonOS"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libc = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+
+libnyx-platform = { path = "../libs/libnyx-platform" }
+libnyx-ipc = { path = "../libs/libnyx-ipc" }
