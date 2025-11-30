@@ -137,3 +137,19 @@ pub fn free_frame(addr: PhysAddr) {
 pub fn alloc_frames(count: usize) -> Option<PhysAddr> {
     FRAME_ALLOCATOR.lock().as_mut()?.alloc_frames(count)
 }
+
+/// Allocate contiguous physical memory of specified size
+///
+/// This is used for DMA buffers that require physically contiguous memory.
+pub fn alloc_contiguous(size: u64) -> Option<PhysAddr> {
+    let num_frames = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+    alloc_frames(num_frames)
+}
+
+/// Free contiguous physical memory
+pub fn free_contiguous(addr: PhysAddr, size: u64) {
+    let num_frames = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+    for i in 0..num_frames {
+        free_frame(PhysAddr::new(addr.as_u64() + (i as u64) * PAGE_SIZE));
+    }
+}

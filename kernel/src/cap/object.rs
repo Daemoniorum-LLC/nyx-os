@@ -95,6 +95,8 @@ pub enum ObjectType {
     GpuDevice = 36,
     /// NPU device
     NpuDevice = 37,
+    /// Block storage device
+    BlockDevice = 38,
 
     // === AI/Tensor Objects (64-95) ===
 
@@ -154,6 +156,7 @@ impl ObjectType {
             35 => Some(Self::DmaBuffer),
             36 => Some(Self::GpuDevice),
             37 => Some(Self::NpuDevice),
+            38 => Some(Self::BlockDevice),
             64 => Some(Self::TensorBuffer),
             65 => Some(Self::InferenceContext),
             66 => Some(Self::ComputeQueue),

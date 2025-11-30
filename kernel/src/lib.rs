@@ -28,6 +28,7 @@ extern crate alloc;
 
 pub mod arch;
 pub mod cap;
+pub mod driver;
 pub mod fs;
 pub mod ipc;
 pub mod mem;
@@ -98,22 +99,26 @@ pub unsafe fn kernel_main(boot_info: &arch::BootInfo) -> ! {
     log::debug!("Initializing time-travel subsystem");
     timetravel::init();
 
-    // Phase 9: Load initrd
+    // Phase 9: Device driver framework
+    log::debug!("Initializing device driver framework");
+    driver::init();
+
+    // Phase 10: Load initrd
     if let Some(initrd) = boot_info.initrd {
         log::info!("Loading initrd ({} bytes)", initrd.len());
         let initrd_phys = mem::PhysAddr::new(initrd.as_ptr() as u64);
         fs::init_initrd(initrd_phys, initrd.len());
     }
 
-    // Phase 10: Start secondary CPUs
+    // Phase 11: Start secondary CPUs
     log::debug!("Starting secondary CPUs");
     arch::start_secondary_cpus();
 
-    // Phase 11: Load init process
+    // Phase 12: Load init process
     log::info!("Loading init process");
     let init_cap = load_init_process(boot_info);
 
-    // Phase 12: Start scheduler - never returns
+    // Phase 13: Start scheduler - never returns
     log::info!("Starting scheduler");
     sched::start(init_cap)
 }
