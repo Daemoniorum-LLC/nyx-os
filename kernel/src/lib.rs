@@ -11,6 +11,7 @@
 //! - **Formally Verified**: Core components proven in Lean 4
 
 #![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 #![feature(
     abi_x86_interrupt,
     allocator_api,

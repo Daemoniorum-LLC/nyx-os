@@ -1,10 +1,13 @@
 //! x86_64 architecture support
 
+pub mod boot;
 pub mod gdt;
 pub mod idt;
 pub mod paging;
 pub mod serial;
 pub mod smp;
+
+pub use boot::_start;
 
 use core::arch::asm;
 

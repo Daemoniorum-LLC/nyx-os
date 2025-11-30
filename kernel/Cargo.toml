@@ -1,29 +1,34 @@
 [package]
 name = "nyx-kernel"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
+authors = ["Lilith Daemon <lilith@daemoniorum.com>"]
+license = "MIT"
+
+# Standalone workspace for bare-metal build
+[workspace]
 
 [lib]
 crate-type = ["staticlib"]
 
 [dependencies]
-bitflags.workspace = true
-spin.workspace = true
-log.workspace = true
-hashbrown.workspace = true
-heapless.workspace = true
-contracts.workspace = true
+bitflags = "2.6"
+spin = { version = "0.9", default-features = false, features = ["spin_mutex", "lazy", "rwlock"] }
+log = { version = "0.4", default-features = false }
+hashbrown = { version = "0.14", default-features = false, features = ["ahash", "inline-more"] }
+heapless = "0.8"
 
-# Architecture-specific
-x86_64 = { workspace = true, optional = true }
-aarch64-cpu = { workspace = true, optional = true }
+# No contracts crate in bare-metal - use cfg_attr for now
+# contracts = ...
+
+# Architecture-specific (optional, we have our own impl)
+# x86_64 = { version = "0.15", optional = true }
+# aarch64-cpu = { version = "9.4", optional = true }
 
 [features]
 default = ["arch-x86_64"]
-arch-x86_64 = ["dep:x86_64"]
-arch-aarch64 = ["dep:aarch64-cpu"]
+arch-x86_64 = []
+arch-aarch64 = []
 
 # AI acceleration
 cuda = []
@@ -33,3 +38,11 @@ npu = []
 # Debugging
 time-travel = []
 kasan = []  # Kernel Address Sanitizer
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = 2

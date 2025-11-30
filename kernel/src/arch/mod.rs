@@ -132,14 +132,18 @@ pub fn enable_interrupts() {}
 /// Boot information passed from bootloader
 #[derive(Debug)]
 pub struct BootInfo {
+    /// Kernel physical start address
+    pub kernel_phys_start: u64,
+    /// Kernel physical end address
+    pub kernel_phys_end: u64,
     /// Physical memory map
     pub memory_map: &'static [MemoryRegion],
     /// Initial ramdisk (initrd) location
     pub initrd: Option<&'static [u8]>,
     /// Kernel command line
-    pub cmdline: &'static str,
+    pub cmdline: Option<&'static str>,
     /// ACPI RSDP physical address
-    pub acpi_rsdp: Option<u64>,
+    pub rsdp_addr: Option<u64>,
     /// Framebuffer info (if available)
     pub framebuffer: Option<FramebufferInfo>,
     /// Number of CPUs detected

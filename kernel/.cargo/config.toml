@@ -1,0 +1,19 @@
+# Nyx Kernel Build Configuration
+
+[build]
+target = "x86_64-nyx.json"
+
+[unstable]
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-nyx]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tlinker.ld",
+    "-C", "code-model=kernel",
+    "-C", "relocation-model=static",
+]
+
+# For qemu testing
+runner = "qemu-system-x86_64 -kernel"
