@@ -68,13 +68,8 @@ async fn main() -> Result<()> {
 
     // CLI notification mode
     if let Some(summary) = args.notify {
-        let client = ipc::HeraldClient::connect(&args.socket).await?;
-        let urgency = match args.urgency.as_str() {
-            "low" => notification::Urgency::Low,
-            "critical" => notification::Urgency::Critical,
-            _ => notification::Urgency::Normal,
-        };
-        let id = client.notify(&summary, args.body.as_deref(), urgency).await?;
+        let client = ipc::HeraldClient::new(&args.socket);
+        let id = client.notify("herald-cli", &summary, args.body.as_deref()).await?;
         println!("Notification sent: {}", id);
         return Ok(());
     }
@@ -92,31 +87,57 @@ async fn main() -> Result<()> {
 
     let config = config::load_config(&args.config)?;
 
-    // Initialize display backend
-    let display = Arc::new(display::NotificationDisplay::new());
-
     // Initialize components
-    let history = Arc::new(RwLock::new(history::NotificationHistory::new(&config)?));
-    let dnd = Arc::new(RwLock::new(dnd::DoNotDisturb::new(&config)?));
-    let notifications = Arc::new(RwLock::new(
-        notification::NotificationManager::new(history.clone(), dnd.clone())?
-    ));
+    let history_path = std::path::PathBuf::from("/var/lib/herald/history.json");
+    let history = Arc::new(RwLock::new(history::NotificationHistory::new(
+        config.history.max_size,
+        config.history.retention_days,
+        history_path,
+    )));
+    let dnd_manager = Arc::new(dnd::DndManager::new(config.dnd.clone()));
+    let queue = Arc::new(RwLock::new(notification::NotificationQueue::default()));
+
+    // Create action channel
+    let (action_tx, mut action_rx) = tokio::sync::mpsc::channel::<(u32, String)>(100);
+
+    // Handle actions in background
+    tokio::spawn(async move {
+        while let Some((id, action)) = action_rx.recv().await {
+            info!("Action invoked: notification={}, action={}", id, action);
+        }
+    });
 
     // Start D-Bus service only on native Linux or WSLg
     if matches!(backend, NotificationBackend::Freedesktop) {
-        let notif_clone = notifications.clone();
+        let (dbus_server, mut event_rx, signal_tx) = dbus::NotificationDbusServer::new();
+        let queue_clone = queue.clone();
+        let history_clone = history.clone();
+
         tokio::spawn(async move {
-            if let Err(e) = dbus::run_dbus_service(notif_clone).await {
-                error!("D-Bus service error: {}", e);
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    dbus::DbusEvent::Notify(request) => {
+                        let mut q = queue_clone.write().await;
+                        let notification = dbus::NotificationDbusServer::to_notification(request, 0);
+                        let id = q.add(notification.clone());
+                        history_clone.write().await.add(notification);
+                        info!("D-Bus notification: id={}", id);
+                    }
+                    dbus::DbusEvent::CloseNotification(id) => {
+                        queue_clone.write().await.remove(id);
+                    }
+                    _ => {}
+                }
             }
         });
+        info!("D-Bus notification handler started");
     } else {
         info!("D-Bus service skipped (not using Freedesktop backend)");
     }
 
     // Start IPC server
-    let server = ipc::HeraldServer::new(args.socket, notifications, history, dnd);
+    let server = ipc::HeraldIpcServer::new(queue, history, dnd_manager, action_tx);
 
     info!("Herald ready");
-    server.run().await
+    server.start(&args.socket).await
 }

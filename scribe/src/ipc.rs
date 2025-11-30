@@ -8,7 +8,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 use tracing::{info, error};
 
-use crate::ScribeState;
+use crate::state::ScribeState;
 use crate::journal::{LogEntry, Priority, Facility, JournalFilter};
 use crate::storage;
 

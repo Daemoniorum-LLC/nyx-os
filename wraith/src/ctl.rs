@@ -7,6 +7,7 @@ mod dns;
 mod wifi;
 mod profile;
 mod ipc;
+mod state;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

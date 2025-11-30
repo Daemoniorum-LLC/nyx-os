@@ -68,7 +68,7 @@ impl InterfaceManager {
     /// Refresh interface list
     pub async fn refresh(&mut self) -> Result<()> {
         use futures::TryStreamExt;
-        use netlink_packet_route::link::LinkAttribute;
+        use netlink_packet_route::link::{LinkAttribute, LinkFlag};
 
         self.interfaces.clear();
 
@@ -96,11 +96,11 @@ impl InterfaceManager {
             }
 
             let flags = InterfaceFlags {
-                up: msg.header.flags & libc::IFF_UP as u32 != 0,
-                running: msg.header.flags & libc::IFF_RUNNING as u32 != 0,
-                loopback: msg.header.flags & libc::IFF_LOOPBACK as u32 != 0,
-                multicast: msg.header.flags & libc::IFF_MULTICAST as u32 != 0,
-                broadcast: msg.header.flags & libc::IFF_BROADCAST as u32 != 0,
+                up: msg.header.flags.contains(&LinkFlag::Up),
+                running: msg.header.flags.contains(&LinkFlag::Running),
+                loopback: msg.header.flags.contains(&LinkFlag::Loopback),
+                multicast: msg.header.flags.contains(&LinkFlag::Multicast),
+                broadcast: msg.header.flags.contains(&LinkFlag::Broadcast),
             };
 
             let interface_type = self.detect_type(&name, &flags);
@@ -138,7 +138,7 @@ impl InterfaceManager {
                         address = Some(*addr);
                     }
                     AddressAttribute::Broadcast(bcast) => {
-                        broadcast = Some(*bcast);
+                        broadcast = Some(IpAddr::V4(*bcast));
                     }
                     _ => {}
                 }
@@ -211,8 +211,9 @@ impl InterfaceManager {
 
     /// Set interface address
     pub async fn set_address(&mut self, name: &str, address: &str) -> Result<()> {
-        let iface = self.interfaces.get(name)
-            .ok_or_else(|| anyhow!("Interface not found: {}", name))?;
+        let index = self.interfaces.get(name)
+            .ok_or_else(|| anyhow!("Interface not found: {}", name))?
+            .index;
 
         let network: ipnetwork::IpNetwork = address.parse()?;
 
@@ -221,7 +222,7 @@ impl InterfaceManager {
 
         // Add new address
         let mut request = self.handle.address().add(
-            iface.index,
+            index,
             network.ip(),
             network.prefix(),
         );

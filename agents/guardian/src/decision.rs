@@ -39,7 +39,7 @@ pub enum FinalDecision {
 }
 
 /// Sandbox restriction levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SandboxLevel {
     /// Light restrictions (network allowed, limited fs)
     Light,

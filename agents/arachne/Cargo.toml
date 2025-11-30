@@ -1,7 +1,7 @@
 [package]
 name = "arachne"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
 license = "MIT OR Apache-2.0"
 description = "Arachne - Network agent for DaemonOS"
@@ -38,6 +38,7 @@ clap = { version = "4.5", features = ["derive"] }
 dashmap = "6.1"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 chrono = "0.4"
+rand = "0.8"
 
 # IPC
 libnyx-ipc = { path = "../../libs/libnyx-ipc" }

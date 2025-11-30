@@ -92,7 +92,7 @@ impl PatternLearner {
             };
         }
 
-        let mut anomaly_score = 0.0;
+        let mut anomaly_score: f32 = 0.0;
         let mut explanations = Vec::new();
 
         // Check app capability pattern

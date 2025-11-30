@@ -151,7 +151,7 @@ impl SchemaValidator {
         }
 
         // Constraint checks
-        if let Some(ref c) = constraints {
+        if let Some(c) = &constraints {
             if let Some(err) = self.check_constraints(value, c) {
                 return ValidationResult::error(&err);
             }

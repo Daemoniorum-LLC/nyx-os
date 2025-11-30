@@ -94,14 +94,19 @@ impl SessionManager {
 
     /// Validate and refresh session
     pub fn validate(&mut self, token: &str) -> Result<&mut Session> {
-        let session = self.sessions.get_mut(token)
-            .ok_or_else(|| anyhow!("Invalid session"))?;
+        // Check if session exists
+        if !self.sessions.contains_key(token) {
+            return Err(anyhow!("Invalid session"));
+        }
 
-        if session.is_expired() {
+        // Check if expired (using immutable borrow) and remove if so
+        if self.sessions.get(token).map(|s| s.is_expired()).unwrap_or(false) {
             self.sessions.remove(token);
             return Err(anyhow!("Session expired"));
         }
 
+        // Now safe to get mutable reference
+        let session = self.sessions.get_mut(token).unwrap();
         session.touch();
         Ok(session)
     }

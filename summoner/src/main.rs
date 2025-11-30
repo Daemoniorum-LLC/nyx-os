@@ -62,29 +62,36 @@ async fn main() -> Result<()> {
     let config = config::load_config(&args.config)?;
 
     // Build application index
-    let index = Arc::new(RwLock::new(index::AppIndex::new(&config)?));
+    let index = Arc::new(RwLock::new(index::AppIndex::new()));
 
     // Scan for applications
     {
         let mut idx = index.write().await;
-        idx.scan().await?;
-        info!("Indexed {} applications", idx.count());
+        let app_dirs = config.app_directories.iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let entries = desktop::scan_directories(&app_dirs).await;
+        for (entry, path) in entries {
+            idx.add(entry, path).await;
+        }
+        info!("Indexed {} applications", idx.len().await);
     }
 
     // Handle CLI mode
     if let Some(query) = args.query {
         let idx = index.read().await;
-        let results = idx.search(&query, 10);
-        for app in results {
-            println!("{}: {}", app.name, app.exec);
+        let results = idx.search_prefix(&query).await;
+        for app in results.iter().take(10) {
+            println!("{}: {}", app.entry.name, app.entry.exec);
         }
         return Ok(());
     }
 
     if let Some(name) = args.launch {
         let idx = index.read().await;
-        if let Some(app) = idx.find_by_name(&name) {
-            desktop::launch(&app).await?;
+        if let Some(app) = idx.get(&name).await {
+            let (mut launcher, _rx) = actions::Launcher::new();
+            launcher.launch(&app.entry, &[]).await?;
         } else {
             eprintln!("Application not found: {}", name);
         }
@@ -95,11 +102,36 @@ async fn main() -> Result<()> {
     info!("Summoner v{} starting", env!("CARGO_PKG_VERSION"));
 
     // Start recent apps tracker
-    let recent = Arc::new(RwLock::new(recent::RecentApps::new(&config)?));
+    let recent_path = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("summoner/recent.json");
+    let recent = Arc::new(RwLock::new(recent::RecentApps::new(config.recent.max_size, recent_path)));
+
+    // Create search engine and launcher
+    let search = Arc::new(search::SearchEngine::new(config.search.clone()));
+    let (launcher, mut launch_rx) = actions::Launcher::new();
+    let launcher = Arc::new(RwLock::new(launcher));
+
+    // Handle launch events
+    tokio::spawn(async move {
+        while let Some(event) = launch_rx.recv().await {
+            match event {
+                actions::LaunchEvent::Started { app_id, pid } => {
+                    info!("Launched {} (PID: {})", app_id, pid);
+                }
+                actions::LaunchEvent::Exited { app_id, pid, code } => {
+                    info!("App {} (PID: {}) exited with code {}", app_id, pid, code);
+                }
+                actions::LaunchEvent::Failed { app_id, error } => {
+                    error!("Failed to launch {}: {}", app_id, error);
+                }
+            }
+        }
+    });
 
     // Start IPC server
-    let server = ipc::SummonerServer::new(args.socket, index, recent);
+    let server = ipc::SummonerIpcServer::new(index, search, launcher, recent);
 
     info!("Summoner ready");
-    server.run().await
+    server.start(&args.socket).await
 }

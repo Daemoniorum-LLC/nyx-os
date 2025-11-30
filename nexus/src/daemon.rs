@@ -90,9 +90,9 @@ async fn handle_request(
 ) -> IpcResponse {
     match request {
         IpcRequest::Install { specs, dry_run } => {
-            let state = state.read().await;
+            let read_guard = state.read().await;
 
-            let resolver = resolver::DependencyResolver::new(&state.store, &state.repos);
+            let resolver = resolver::DependencyResolver::new(&read_guard.store, &read_guard.repos);
 
             match resolver.resolve(&specs).await {
                 Ok(plan) => {
@@ -107,10 +107,10 @@ async fn handle_request(
                         };
                     }
 
-                    drop(state);
-                    let mut state = state.write().await;
+                    drop(read_guard);
+                    let write_guard = state.write().await;
 
-                    let mut tx = transaction::Transaction::new(&state.store);
+                    let mut tx = transaction::Transaction::new(&write_guard.store);
                     for pkg in plan.to_install {
                         tx.add_install(pkg);
                     }

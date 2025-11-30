@@ -1,7 +1,7 @@
 [package]
 name = "summoner"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
 license = "MIT OR Apache-2.0"
 description = "Summoner - Application launcher for DaemonOS"
@@ -29,6 +29,7 @@ chrono = "0.4"
 dirs = "5.0"
 walkdir = "2.5"
 fuzzy-matcher = "0.3"
+which = "7.0"
 
 # Desktop entries
 freedesktop-desktop-entry = "0.7"

@@ -5,6 +5,7 @@ mod crypto;
 mod session;
 mod storage;
 mod ipc;
+mod state;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

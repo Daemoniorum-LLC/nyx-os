@@ -21,6 +21,7 @@ clap = { version = "4.5", features = ["derive"] }
 toml = "0.8"
 nix = { version = "0.29", features = ["signal", "process", "fs", "user"] }
 async-trait = "0.1"
+futures = { workspace = true }
 
 libnyx-platform = { path = "../libs/libnyx-platform" }
 libnyx-ipc = { path = "../libs/libnyx-ipc" }

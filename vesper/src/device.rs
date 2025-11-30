@@ -135,15 +135,13 @@ impl DeviceManager {
 
         // Set defaults if not set
         if self.default_sink.is_none() {
-            if let Some(dev) = self.playback_devices().next() {
-                self.default_sink = Some(dev.name.clone());
-            }
+            let sink_name = self.playback_devices().next().map(|d| d.name.clone());
+            self.default_sink = sink_name;
         }
 
         if self.default_source.is_none() {
-            if let Some(dev) = self.capture_devices().next() {
-                self.default_source = Some(dev.name.clone());
-            }
+            let source_name = self.capture_devices().next().map(|d| d.name.clone());
+            self.default_source = source_name;
         }
 
         Ok(())
@@ -271,10 +269,12 @@ impl DeviceManager {
 
             // Update defaults if needed
             if self.default_sink.as_deref() == Some(name) {
-                self.default_sink = self.playback_devices().next().map(|d| d.name.clone());
+                let new_sink = self.playback_devices().next().map(|d| d.name.clone());
+                self.default_sink = new_sink;
             }
             if self.default_source.as_deref() == Some(name) {
-                self.default_source = self.capture_devices().next().map(|d| d.name.clone());
+                let new_source = self.capture_devices().next().map(|d| d.name.clone());
+                self.default_source = new_source;
             }
         }
     }

@@ -1,10 +1,10 @@
 //! scribectl - Journal query and control tool
 
 mod journal;
-mod collector;
 mod storage;
 mod query;
 mod ipc;
+mod state;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
