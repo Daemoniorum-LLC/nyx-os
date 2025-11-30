@@ -333,14 +333,12 @@ impl Supervisor {
                 }
 
                 // Handle SIGTERM
-                #[cfg(unix)]
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM, initiating shutdown");
                     break;
                 }
 
                 // Handle SIGINT
-                #[cfg(unix)]
                 _ = sigint.recv() => {
                     info!("Received SIGINT, initiating shutdown");
                     break;

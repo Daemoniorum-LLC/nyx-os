@@ -12,6 +12,7 @@ mod crypto;
 mod session;
 mod storage;
 mod ipc;
+mod state;
 
 use anyhow::Result;
 use clap::Parser;
@@ -23,6 +24,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::keyring::Keyring;
 use crate::session::SessionManager;
 use crate::ipc::CipherServer;
+use crate::state::CipherState;
 
 #[derive(Parser)]
 #[command(name = "cipherd")]
@@ -39,13 +41,6 @@ struct Args {
     /// User socket path (for per-user access)
     #[arg(long)]
     user_socket: Option<String>,
-}
-
-/// Daemon state
-pub struct CipherState {
-    keyring: Keyring,
-    sessions: SessionManager,
-    data_dir: String,
 }
 
 #[tokio::main]

@@ -294,9 +294,10 @@ impl RoutingTable {
     pub async fn add(&mut self, route: &Route) -> Result<()> {
         let mut args = vec!["route", "add", &route.destination];
 
-        if let Some(ref gw) = route.gateway {
+        let gw_str = route.gateway.map(|gw| gw.to_string());
+        if let Some(ref gw) = gw_str {
             args.push("via");
-            args.push(&gw.to_string());
+            args.push(gw);
         }
 
         if !route.interface.is_empty() {

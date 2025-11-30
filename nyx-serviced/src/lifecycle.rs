@@ -103,7 +103,7 @@ impl LifecycleManager {
                 // Start dependencies first
                 for dep in not_running {
                     info!("Starting dependency {} for {}", dep, name);
-                    if let Err(e) = self.start(&dep).await {
+                    if let Err(e) = Box::pin(self.start(&dep)).await {
                         return Err(anyhow!(
                             "Failed to start dependency {} for {}: {}",
                             dep, name, e

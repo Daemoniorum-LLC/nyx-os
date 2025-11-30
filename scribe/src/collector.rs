@@ -7,7 +7,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::UnixListener;
 use tracing::{debug, warn};
 
-use crate::ScribeState;
+use crate::state::ScribeState;
 use crate::journal::{LogEntry, Priority, Facility};
 
 /// Kernel log collector (reads from /dev/kmsg)
