@@ -3,12 +3,17 @@
 pub mod gdt;
 pub mod idt;
 pub mod paging;
+pub mod serial;
 pub mod smp;
 
 use core::arch::asm;
 
 /// Initialize x86_64-specific features
 pub fn init() {
+    // Initialize serial console first (for early debugging)
+    serial::init();
+    serial::init_logging();
+
     // Set up GDT
     gdt::init();
 
@@ -17,6 +22,8 @@ pub fn init() {
 
     // Enable required CPU features
     enable_features();
+
+    log::info!("x86_64 architecture initialized");
 }
 
 /// Enable CPU features (SSE, AVX, etc.)

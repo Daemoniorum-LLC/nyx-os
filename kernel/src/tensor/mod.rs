@@ -246,3 +246,75 @@ impl From<CapError> for TensorError {
         TensorError::Capability(err)
     }
 }
+
+// ============================================================================
+// IPC Helper Functions
+// ============================================================================
+
+/// Allocate a buffer (IPC interface)
+/// Returns (buffer_id, physical_address)
+pub fn allocate_buffer(
+    size: u64,
+    device_type: u32,
+    _alignment: u64,
+) -> Result<(u64, u64), TensorError> {
+    // Find appropriate device
+    let device_id = match device_type {
+        0 => 0, // CPU
+        1 => find_gpu_device().unwrap_or(0), // GPU (fallback to CPU)
+        2 => find_npu_device().unwrap_or(0), // NPU (fallback to CPU)
+        _ => 0,
+    };
+
+    // Calculate shape from size (treat as 1D buffer)
+    let shape = TensorShape::vector(size as u32);
+
+    // Allocate buffer
+    let cap = tensor_alloc(&shape, DType::U8, device_id)?;
+
+    // Get the buffer's physical address
+    let tensors = TENSORS.read();
+    let buffer = tensors.get(&cap.object_id).ok_or(TensorError::NotFound)?;
+
+    Ok((cap.object_id.as_u64(), buffer.device_ptr))
+}
+
+/// Submit inference request (IPC interface)
+pub fn submit_inference(
+    model_id: u64,
+    input_buffer: u64,
+    _output_buffer: u64,
+    _flags: u32,
+) -> Result<u64, TensorError> {
+    // Look up inference context by model_id
+    let contexts = CONTEXTS.read();
+
+    // Find context for this model
+    let context_id = ObjectId::from_raw(model_id);
+    let context = contexts.get(&context_id).ok_or(TensorError::NotFound)?;
+
+    // Create inference params with default balanced sampling
+    let params = inference::InferenceParams::balanced();
+
+    // Submit request
+    let input_id = ObjectId::from_raw(input_buffer);
+    let request_id = context.submit(input_id, params)?;
+
+    Ok(request_id)
+}
+
+/// Find first GPU device
+fn find_gpu_device() -> Option<u32> {
+    let devices = DEVICES.read();
+    devices.iter()
+        .find(|d| matches!(d.device_type, AcceleratorType::Gpu))
+        .map(|d| d.id)
+}
+
+/// Find first NPU device
+fn find_npu_device() -> Option<u32> {
+    let devices = DEVICES.read();
+    devices.iter()
+        .find(|d| matches!(d.device_type, AcceleratorType::Npu))
+        .map(|d| d.id)
+}

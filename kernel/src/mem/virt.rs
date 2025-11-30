@@ -1,6 +1,7 @@
 //! Virtual memory manager
 
 use super::{VirtAddr, PhysAddr, PAGE_SIZE};
+use crate::arch::x86_64::paging::{PageMapper, PageFlags, flush_tlb_page};
 use crate::cap::ObjectId;
 use alloc::collections::BTreeMap;
 use bitflags::bitflags;
@@ -176,12 +177,63 @@ impl AddressSpace {
     /// Map a single page
     fn map_page(
         &mut self,
-        _virt: VirtAddr,
-        _phys: PhysAddr,
-        _prot: Protection,
+        virt: VirtAddr,
+        phys: PhysAddr,
+        prot: Protection,
     ) -> Result<(), VmError> {
-        // TODO: Actual page table manipulation
+        // Convert protection flags to page flags
+        let mut flags = PageFlags::PRESENT;
+
+        if prot.contains(Protection::WRITE) {
+            flags |= PageFlags::WRITABLE;
+        }
+
+        if prot.contains(Protection::USER) {
+            flags |= PageFlags::USER;
+        }
+
+        if !prot.contains(Protection::EXECUTE) {
+            flags |= PageFlags::NO_EXECUTE;
+        }
+
+        // Create a page mapper for this address space
+        let mut mapper = PageMapper::new(self.page_table_root);
+
+        // Allocate page tables as needed
+        let mut allocator = || super::alloc_frame();
+
+        mapper.map_page(virt, phys, flags, &mut allocator)
+            .map_err(|e| match e {
+                crate::arch::x86_64::paging::MapError::AlreadyMapped => VmError::Overlap,
+                crate::arch::x86_64::paging::MapError::OutOfMemory => VmError::OutOfMemory,
+                _ => VmError::NotImplemented,
+            })?;
+
+        // Flush TLB for this page
+        flush_tlb_page(virt);
+
         Ok(())
+    }
+
+    /// Unmap a single page
+    fn unmap_page(&mut self, virt: VirtAddr) -> Result<PhysAddr, VmError> {
+        let mut mapper = PageMapper::new(self.page_table_root);
+
+        mapper.unmap_page(virt)
+            .map_err(|e| match e {
+                crate::arch::x86_64::paging::MapError::NotMapped => VmError::NotMapped,
+                _ => VmError::NotImplemented,
+            })
+    }
+
+    /// Get the page table root physical address
+    pub fn page_table_root(&self) -> PhysAddr {
+        self.page_table_root
+    }
+
+    /// Switch to this address space
+    pub fn activate(&self) {
+        crate::arch::x86_64::paging::switch_address_space(self.page_table_root);
     }
 }
 
