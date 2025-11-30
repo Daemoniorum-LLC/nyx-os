@@ -1,0 +1,44 @@
+# Herald Notification Service
+# Example service unit file for nyx-serviced
+
+name: herald
+description: Nyx Notification Daemon
+
+service:
+  service_type: simple
+  exec_start: /usr/bin/herald --config /grimoire/system/herald.yaml
+  exec_reload: /bin/kill -HUP $MAINPID
+  restart: on-failure
+  restart_sec: 5
+  timeout_start_sec: 30
+  timeout_stop_sec: 10
+  watchdog_sec: 60
+
+  # Environment
+  environment:
+    RUST_LOG: info
+    XDG_RUNTIME_DIR: /run/user/1000
+
+  # User/Group
+  user: nyx
+  group: nyx
+
+install:
+  after:
+    - network.target
+    - dbus.service
+  wants:
+    - aether.service
+  wanted_by:
+    - graphical.target
+  enabled: true
+
+resources:
+  memory_max: 134217728  # 128MB
+  cpu_quota: 25          # 25% max
+  tasks_max: 50
+
+socket:
+  socket_type: stream
+  listen: /run/herald/herald.sock
+  mode: 0660

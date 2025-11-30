@@ -1,0 +1,47 @@
+# Arachne Network Agent
+# Example service unit file for nyx-serviced
+
+name: arachne
+description: Nyx Network Management Agent
+
+service:
+  service_type: notify
+  exec_start: /usr/bin/arachne --config /grimoire/system/arachne.yaml
+  exec_stop: /usr/bin/arachne --shutdown
+  exec_reload: /usr/bin/arachne --reload
+  restart: always
+  restart_sec: 3
+  restart_max: 5
+  restart_burst_sec: 300
+  timeout_start_sec: 60
+  timeout_stop_sec: 30
+  watchdog_sec: 30
+
+  # Pre-start: ensure network stack is ready
+  exec_start_pre:
+    - /sbin/modprobe nf_tables
+    - /sbin/ip link set lo up
+
+  environment:
+    RUST_LOG: info
+
+install:
+  after:
+    - network-pre.target
+  before:
+    - network.target
+    - network-online.target
+  requires: []
+  wants:
+    - systemd-networkd.service
+  wanted_by:
+    - multi-user.target
+  enabled: true
+
+resources:
+  memory_max: 268435456  # 256MB
+  memory_high: 134217728 # 128MB soft limit
+  cpu_weight: 150        # Higher priority
+  tasks_max: 100
+  limit_nofile: 65536
+  oom_score_adjust: -500 # Less likely to be killed

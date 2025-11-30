@@ -6,6 +6,7 @@ members = [
     "libs/libnyx-ipc",
     "libs/libnyx-platform",
     "init",
+    "nyx-serviced",
     "agents/guardian",
     "agents/archon",
     "agents/arachne",

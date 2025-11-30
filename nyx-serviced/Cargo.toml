@@ -1,0 +1,26 @@
+[package]
+name = "nyx-serviced"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Nyx Service Manager - systemd-like service orchestration"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+libc = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+toml = "0.8"
+nix = { version = "0.29", features = ["signal", "process", "fs", "user"] }
+async-trait = "0.1"
+
+libnyx-platform = { path = "../libs/libnyx-platform" }
+libnyx-ipc = { path = "../libs/libnyx-ipc" }

@@ -1,0 +1,47 @@
+# Archon Process Orchestration Agent
+# Example service unit file for nyx-serviced
+
+name: archon
+description: Nyx Process Orchestration and Container Management
+
+service:
+  service_type: notify
+  exec_start: /usr/bin/archon --config /grimoire/system/archon.yaml
+  exec_stop: /usr/bin/archon --graceful-shutdown
+  restart: always
+  restart_sec: 1
+  timeout_start_sec: 120
+  timeout_stop_sec: 60
+  watchdog_sec: 30
+  kill_signal: SIGTERM
+
+  # Pre-start: prepare cgroups
+  exec_start_pre:
+    - /bin/mkdir -p /sys/fs/cgroup/nyx.slice
+
+  working_directory: /var/lib/archon
+
+  environment:
+    RUST_LOG: info
+    NYX_CGROUP_ROOT: /sys/fs/cgroup/nyx.slice
+
+install:
+  after:
+    - nyx-init.target
+  before:
+    - multi-user.target
+  requires:
+    - nyx-serviced.service
+  wanted_by:
+    - multi-user.target
+  enabled: true
+
+resources:
+  memory_max: 536870912   # 512MB
+  memory_high: 268435456  # 256MB
+  cpu_weight: 200         # High priority
+  cpu_quota: 50           # Max 50% of one CPU
+  tasks_max: 500          # Need many for container management
+  limit_nofile: 1048576   # High file limit for managing containers
+  limit_nproc: 4096
+  oom_score_adjust: -900  # Critical service
