@@ -209,11 +209,134 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_rights() {
+        let empty = Rights::empty();
+        assert!(empty.is_empty());
+        assert!(!empty.contains(Rights::READ));
+        assert!(empty.is_subset_of(Rights::READ));
+    }
+
+    #[test]
+    fn test_individual_rights() {
+        assert_eq!(Rights::READ.bits(), 1 << 0);
+        assert_eq!(Rights::WRITE.bits(), 1 << 1);
+        assert_eq!(Rights::EXECUTE.bits(), 1 << 2);
+        assert_eq!(Rights::GRANT.bits(), 1 << 3);
+    }
+
+    #[test]
+    fn test_rights_or() {
+        let rw = Rights::READ | Rights::WRITE;
+        assert!(rw.contains(Rights::READ));
+        assert!(rw.contains(Rights::WRITE));
+        assert!(!rw.contains(Rights::EXECUTE));
+    }
+
+    #[test]
+    fn test_rights_and() {
+        let rwe = Rights::READ | Rights::WRITE | Rights::EXECUTE;
+        let rw = Rights::READ | Rights::WRITE;
+        let intersection = rwe & rw;
+        assert!(intersection.contains(Rights::READ));
+        assert!(intersection.contains(Rights::WRITE));
+        assert!(!intersection.contains(Rights::EXECUTE));
+    }
+
+    #[test]
+    fn test_rights_remove() {
+        let mut rights = Rights::READ | Rights::WRITE | Rights::GRANT;
+        rights.remove(Rights::WRITE);
+        assert!(rights.contains(Rights::READ));
+        assert!(!rights.contains(Rights::WRITE));
+        assert!(rights.contains(Rights::GRANT));
+    }
+
+    #[test]
     fn test_common_combinations() {
         // AI_INFERENCE should be subset of AI_FULL
         assert!(Rights::AI_INFERENCE.is_subset_of(Rights::AI_FULL));
 
         // IPC_CLIENT should not be subset of IPC_SERVER
         assert!(!Rights::IPC_CLIENT.is_subset_of(Rights::IPC_SERVER));
+    }
+
+    #[test]
+    fn test_memory_combinations() {
+        // MEMORY_READ should be subset of MEMORY_FULL
+        assert!(Rights::MEMORY_READ.is_subset_of(Rights::MEMORY_FULL));
+
+        // MEMORY_FULL should contain all expected rights
+        assert!(Rights::MEMORY_FULL.contains(Rights::READ));
+        assert!(Rights::MEMORY_FULL.contains(Rights::WRITE));
+        assert!(Rights::MEMORY_FULL.contains(Rights::MAP));
+        assert!(Rights::MEMORY_FULL.contains(Rights::UNMAP));
+    }
+
+    #[test]
+    fn test_ipc_combinations() {
+        // IPC_FULL contains all IPC rights
+        assert!(Rights::IPC_FULL.contains(Rights::SEND));
+        assert!(Rights::IPC_FULL.contains(Rights::RECEIVE));
+        assert!(Rights::IPC_FULL.contains(Rights::CALL));
+        assert!(Rights::IPC_FULL.contains(Rights::REPLY));
+
+        // IPC_CLIENT contains SEND, CALL, WAIT
+        assert!(Rights::IPC_CLIENT.contains(Rights::SEND));
+        assert!(Rights::IPC_CLIENT.contains(Rights::CALL));
+        assert!(Rights::IPC_CLIENT.contains(Rights::WAIT));
+        assert!(!Rights::IPC_CLIENT.contains(Rights::RECEIVE));
+    }
+
+    #[test]
+    fn test_process_combinations() {
+        assert!(Rights::PROCESS_FULL.contains(Rights::FORK));
+        assert!(Rights::PROCESS_FULL.contains(Rights::KILL));
+        assert!(Rights::PROCESS_FULL.contains(Rights::SUSPEND));
+        assert!(Rights::PROCESS_FULL.contains(Rights::RESUME));
+    }
+
+    #[test]
+    fn test_description() {
+        let read_only = Rights::READ;
+        assert_eq!(read_only.description(), "read");
+
+        let rw = Rights::READ | Rights::WRITE;
+        let desc = rw.description();
+        assert!(desc.contains("read"));
+        assert!(desc.contains("write"));
+
+        let empty = Rights::empty();
+        assert_eq!(empty.description(), "none");
+    }
+
+    #[test]
+    fn test_hardware_rights() {
+        assert_eq!(Rights::IRQ.bits(), 1 << 32);
+        assert_eq!(Rights::DMA.bits(), 1 << 33);
+        assert_eq!(Rights::MMIO.bits(), 1 << 34);
+    }
+
+    #[test]
+    fn test_is_subset_reflexive() {
+        let rights = Rights::READ | Rights::WRITE;
+        assert!(rights.is_subset_of(rights));
+    }
+
+    #[test]
+    fn test_all_rights_independent() {
+        // Each right should not overlap with others (non-combination rights)
+        let individual_rights = [
+            Rights::READ, Rights::WRITE, Rights::EXECUTE, Rights::GRANT,
+            Rights::REVOKE, Rights::DUPLICATE, Rights::TRANSFER, Rights::INSPECT,
+            Rights::MAP, Rights::UNMAP, Rights::SEND, Rights::RECEIVE,
+        ];
+
+        for (i, &a) in individual_rights.iter().enumerate() {
+            for (j, &b) in individual_rights.iter().enumerate() {
+                if i != j {
+                    assert!(!a.contains(b), "{:?} should not contain {:?}", a, b);
+                }
+            }
+        }
     }
 }

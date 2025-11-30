@@ -41,7 +41,7 @@ pub fn init() {
 }
 
 /// Create a new IPC ring for a thread
-pub fn create_ring(sq_size: u32, cq_size: u32) -> Result<IpcRing, IpcError> {
+pub fn create_ring(sq_size: u32, cq_size: u32, _flags: u32) -> Result<Capability, IpcError> {
     // Validate sizes (must be power of 2)
     if !sq_size.is_power_of_two() || !cq_size.is_power_of_two() {
         return Err(IpcError::InvalidSize);
@@ -52,7 +52,14 @@ pub fn create_ring(sq_size: u32, cq_size: u32) -> Result<IpcRing, IpcError> {
         return Err(IpcError::InvalidSize);
     }
 
-    IpcRing::new(sq_size, cq_size)
+    let _ring = IpcRing::new(sq_size, cq_size)?;
+    let object_id = ObjectId::new(ObjectType::IpcRing);
+
+    let cap = unsafe {
+        Capability::new_unchecked(object_id, Rights::IPC_FULL)
+    };
+
+    Ok(cap)
 }
 
 /// Create a new IPC endpoint
@@ -118,6 +125,8 @@ pub enum IpcError {
     Disconnected,
     /// Invalid operation for this object type
     InvalidOperation,
+    /// Internal error
+    InternalError,
 }
 
 impl From<CapError> for IpcError {
@@ -145,38 +154,520 @@ pub fn process_sq_entry(
     }
 }
 
-fn process_send(_entry: &SqEntry, _ring: &mut IpcRing) -> Result<(), IpcError> {
-    todo!("Implement send operation")
+/// Process Send operation
+/// params[0] = message data pointer
+/// params[1] = message length
+/// params[2] = flags/tag
+fn process_send(entry: &SqEntry, ring: &mut IpcRing) -> Result<(), IpcError> {
+    let endpoint_id = ObjectId::from_raw(entry.cap_slot as u64);
+
+    // Look up the endpoint
+    let endpoints = ENDPOINTS.read();
+    let endpoint = endpoints
+        .get(&endpoint_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    // Build message from params
+    let msg = Message::simple(entry.params[2] as u32, &[]);
+
+    // Try non-blocking send
+    match endpoint.send(msg) {
+        Ok(()) => {
+            // Post completion
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: 0,
+                    data: [0; 2],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: error_to_code(&e),
+                    data: [0; 2],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Err(e)
+        }
+    }
 }
 
-fn process_receive(_entry: &SqEntry, _ring: &mut IpcRing) -> Result<(), IpcError> {
-    todo!("Implement receive operation")
+/// Process Receive operation
+/// params[0] = buffer pointer
+/// params[1] = buffer length
+/// params[2] = timeout (0 = non-blocking, u64::MAX = blocking)
+fn process_receive(entry: &SqEntry, ring: &mut IpcRing) -> Result<(), IpcError> {
+    let endpoint_id = ObjectId::from_raw(entry.cap_slot as u64);
+    let timeout = entry.params[2];
+
+    // Look up the endpoint
+    let endpoints = ENDPOINTS.read();
+    let endpoint = endpoints
+        .get(&endpoint_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    // Try to receive based on timeout
+    let result = if timeout == 0 {
+        // Non-blocking
+        endpoint.try_receive().ok_or(IpcError::WouldBlock)
+    } else if timeout == u64::MAX {
+        // Blocking
+        drop(endpoints);
+        let endpoints = ENDPOINTS.read();
+        let endpoint = endpoints.get(&endpoint_id).ok_or(IpcError::InvalidEndpoint)?;
+        endpoint.receive()
+    } else {
+        // Timeout
+        drop(endpoints);
+        let endpoints = ENDPOINTS.read();
+        let endpoint = endpoints.get(&endpoint_id).ok_or(IpcError::InvalidEndpoint)?;
+        endpoint.receive_timeout(timeout)
+    };
+
+    match result {
+        Ok(msg) => {
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: msg.header.length as i64,
+                    data: [msg.header.tag as u64, msg.header.cap_count as u64],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: error_to_code(&e),
+                    data: [0; 2],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Err(e)
+        }
+    }
 }
 
-fn process_call(_entry: &SqEntry, _ring: &mut IpcRing) -> Result<(), IpcError> {
-    todo!("Implement call operation")
+/// Process Call operation (synchronous RPC: send + receive reply)
+/// params[0] = request data pointer
+/// params[1] = request length
+/// params[2] = reply buffer pointer
+/// params[3] = reply buffer length
+fn process_call(entry: &SqEntry, ring: &mut IpcRing) -> Result<(), IpcError> {
+    let endpoint_id = ObjectId::from_raw(entry.cap_slot as u64);
+
+    // Build request message
+    let request = Message::simple(entry.params[1] as u32, &[]);
+
+    // Look up the endpoint and perform call
+    let endpoints = ENDPOINTS.read();
+    let endpoint = endpoints
+        .get(&endpoint_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    // Send request
+    endpoint.send(request)?;
+    drop(endpoints);
+
+    // Wait for reply
+    let endpoints = ENDPOINTS.read();
+    let endpoint = endpoints.get(&endpoint_id).ok_or(IpcError::InvalidEndpoint)?;
+    let reply = endpoint.receive()?;
+
+    if !entry.flags.contains(SqFlags::NO_CQE) {
+        let cqe = CqEntry {
+            user_data: entry.user_data,
+            result: reply.header.length as i64,
+            data: [reply.header.tag as u64, 0],
+            flags: CqFlags::empty(),
+            _reserved: 0,
+        };
+        ring.push_cq(cqe)?;
+    }
+
+    Ok(())
 }
 
-fn process_reply(_entry: &SqEntry, _ring: &mut IpcRing) -> Result<(), IpcError> {
-    todo!("Implement reply operation")
+/// Process Reply operation (respond to a Call)
+/// params[0] = reply data pointer
+/// params[1] = reply length
+/// params[2] = caller token
+fn process_reply(entry: &SqEntry, ring: &mut IpcRing) -> Result<(), IpcError> {
+    let endpoint_id = ObjectId::from_raw(entry.cap_slot as u64);
+    let caller_token = entry.params[2];
+
+    // Build reply message
+    let reply = Message::simple(entry.params[1] as u32, &[]);
+
+    // Look up the endpoint
+    let endpoints = ENDPOINTS.read();
+    let endpoint = endpoints
+        .get(&endpoint_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    // Send reply
+    endpoint.send(reply)?;
+
+    if !entry.flags.contains(SqFlags::NO_CQE) {
+        let cqe = CqEntry {
+            user_data: entry.user_data,
+            result: 0,
+            data: [caller_token, 0],
+            flags: CqFlags::empty(),
+            _reserved: 0,
+        };
+        ring.push_cq(cqe)?;
+    }
+
+    Ok(())
 }
 
-fn process_signal(_entry: &SqEntry, _ring: &mut IpcRing) -> Result<(), IpcError> {
-    todo!("Implement signal operation")
+/// Process Signal operation (set notification bits)
+/// params[0] = bits to signal
+fn process_signal(entry: &SqEntry, ring: &mut IpcRing) -> Result<(), IpcError> {
+    let notif_id = ObjectId::from_raw(entry.cap_slot as u64);
+    let bits = entry.params[0];
+
+    // Look up the notification object
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    // Signal the bits
+    notification.signal(bits);
+
+    if !entry.flags.contains(SqFlags::NO_CQE) {
+        let cqe = CqEntry {
+            user_data: entry.user_data,
+            result: 0,
+            data: [bits, notification.peek()],
+            flags: CqFlags::empty(),
+            _reserved: 0,
+        };
+        ring.push_cq(cqe)?;
+    }
+
+    Ok(())
 }
 
-fn process_wait(_entry: &SqEntry, _ring: &mut IpcRing) -> Result<(), IpcError> {
-    todo!("Implement wait operation")
+/// Process Wait operation (wait for notification bits)
+/// params[0] = mask of bits to wait for
+/// params[1] = timeout (0 = non-blocking, u64::MAX = blocking)
+fn process_wait(entry: &SqEntry, ring: &mut IpcRing) -> Result<(), IpcError> {
+    let notif_id = ObjectId::from_raw(entry.cap_slot as u64);
+    let mask = entry.params[0];
+    let timeout = entry.params[1];
+
+    // Look up the notification object
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    // Wait based on timeout
+    let result = if timeout == 0 {
+        // Non-blocking poll
+        let bits = notification.poll(mask);
+        if bits != 0 { Ok(bits) } else { Err(IpcError::WouldBlock) }
+    } else if timeout == u64::MAX {
+        // Blocking wait
+        Ok(notification.wait(mask))
+    } else {
+        // Timeout wait
+        let bits = notification.wait_timeout(mask, timeout);
+        if bits != 0 { Ok(bits) } else { Err(IpcError::Timeout) }
+    };
+
+    match result {
+        Ok(bits) => {
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: bits as i64,
+                    data: [bits, mask],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: error_to_code(&e),
+                    data: [0, mask],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Err(e)
+        }
+    }
 }
 
-fn process_poll(_entry: &SqEntry, _ring: &mut IpcRing) -> Result<(), IpcError> {
-    todo!("Implement poll operation")
+/// Process Poll operation (non-blocking check for notification bits)
+/// params[0] = mask of bits to check
+fn process_poll(entry: &SqEntry, ring: &mut IpcRing) -> Result<(), IpcError> {
+    let notif_id = ObjectId::from_raw(entry.cap_slot as u64);
+    let mask = entry.params[0];
+
+    // Look up the notification object
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    // Non-blocking poll
+    let bits = notification.poll(mask);
+
+    if !entry.flags.contains(SqFlags::NO_CQE) {
+        let cqe = CqEntry {
+            user_data: entry.user_data,
+            result: bits as i64,
+            data: [bits, notification.peek()],
+            flags: CqFlags::empty(),
+            _reserved: 0,
+        };
+        ring.push_cq(cqe)?;
+    }
+
+    Ok(())
 }
 
-fn process_tensor_alloc(_entry: &SqEntry, _ring: &mut IpcRing) -> Result<(), IpcError> {
-    todo!("Implement tensor_alloc operation")
+/// Process TensorAlloc operation (allocate tensor buffer)
+/// params[0] = size in bytes
+/// params[1] = device type (0=CPU, 1=GPU, 2=NPU)
+/// params[2] = alignment
+fn process_tensor_alloc(entry: &SqEntry, ring: &mut IpcRing) -> Result<(), IpcError> {
+    let size = entry.params[0];
+    let device_type = entry.params[1] as u32;
+    let alignment = entry.params[2];
+
+    // Delegate to tensor subsystem
+    let result = crate::tensor::allocate_buffer(size, device_type, alignment);
+
+    match result {
+        Ok((buffer_id, phys_addr)) => {
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: 0,
+                    data: [buffer_id, phys_addr],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Ok(())
+        }
+        Err(_) => {
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: -1,
+                    data: [0; 2],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Err(IpcError::InvalidOperation)
+        }
+    }
 }
 
-fn process_inference(_entry: &SqEntry, _ring: &mut IpcRing) -> Result<(), IpcError> {
-    todo!("Implement inference operation")
+/// Process Inference operation (submit inference request)
+/// params[0] = model ID
+/// params[1] = input tensor buffer ID
+/// params[2] = output tensor buffer ID
+/// params[3] = flags
+fn process_inference(entry: &SqEntry, ring: &mut IpcRing) -> Result<(), IpcError> {
+    let model_id = entry.params[0];
+    let input_buffer = entry.params[1];
+    let output_buffer = entry.params[2];
+    let flags = entry.params[3] as u32;
+
+    // Submit inference request to tensor subsystem
+    let result = crate::tensor::submit_inference(model_id, input_buffer, output_buffer, flags);
+
+    match result {
+        Ok(request_id) => {
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: 0,
+                    data: [request_id, 0],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Ok(())
+        }
+        Err(_) => {
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: -1,
+                    data: [0; 2],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+                ring.push_cq(cqe)?;
+            }
+            Err(IpcError::InvalidOperation)
+        }
+    }
+}
+
+/// Convert IpcError to error code for completion entry
+fn error_to_code(err: &IpcError) -> i64 {
+    match err {
+        IpcError::InvalidSize => -1,
+        IpcError::QueueFull => -2,
+        IpcError::QueueEmpty => -3,
+        IpcError::Timeout => -4,
+        IpcError::Cancelled => -5,
+        IpcError::InvalidEndpoint => -6,
+        IpcError::Capability(_) => -7,
+        IpcError::MessageTooLarge => -8,
+        IpcError::WouldBlock => -9,
+        IpcError::Disconnected => -10,
+        IpcError::InvalidOperation => -11,
+    }
+}
+
+// ============================================================================
+// High-Level Syscall Interface Functions
+// ============================================================================
+
+/// Enter IPC ring and process operations
+pub fn ring_enter(
+    _ring_id: ObjectId,
+    _to_submit: u32,
+    _min_complete: u32,
+) -> Result<u32, IpcError> {
+    // Ring processing would happen here
+    // For now, return 0 completions
+    Ok(0)
+}
+
+/// Send a message to an endpoint
+pub fn send(
+    dest_id: ObjectId,
+    data: &[u8],
+    _timeout: Option<core::time::Duration>,
+) -> Result<(), IpcError> {
+    let endpoints = ENDPOINTS.read();
+    let endpoint = endpoints
+        .get(&dest_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    let msg = Message::simple(0, data);
+    endpoint.send(msg)
+}
+
+/// Receive a message from an endpoint
+pub fn receive(
+    src_id: ObjectId,
+    _timeout: Option<core::time::Duration>,
+) -> Result<alloc::vec::Vec<u8>, IpcError> {
+    let endpoints = ENDPOINTS.read();
+    let endpoint = endpoints
+        .get(&src_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    let msg = endpoint.receive()?;
+    Ok(msg.data)
+}
+
+/// Synchronous call: send request and wait for reply
+pub fn call(
+    dest_id: ObjectId,
+    request: &[u8],
+) -> Result<alloc::vec::Vec<u8>, IpcError> {
+    // Send request
+    send(dest_id, request, None)?;
+
+    // Wait for reply
+    receive(dest_id, None)
+}
+
+/// Reply to an incoming call
+pub fn reply(
+    reply_id: ObjectId,
+    data: &[u8],
+) -> Result<(), IpcError> {
+    send(reply_id, data, None)
+}
+
+/// Signal notification bits
+pub fn signal(
+    notif_id: ObjectId,
+    bits: u64,
+) -> Result<(), IpcError> {
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    notification.signal(bits);
+    Ok(())
+}
+
+/// Wait for notification bits
+pub fn wait(
+    notif_id: ObjectId,
+    mask: u64,
+    timeout: Option<core::time::Duration>,
+) -> Result<u64, IpcError> {
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    if let Some(duration) = timeout {
+        let timeout_ns = duration.as_nanos() as u64;
+        let bits = notification.wait_timeout(mask, timeout_ns);
+        if bits != 0 {
+            Ok(bits)
+        } else {
+            Err(IpcError::Timeout)
+        }
+    } else {
+        Ok(notification.wait(mask))
+    }
+}
+
+/// Poll notification bits (non-blocking)
+pub fn poll(
+    notif_id: ObjectId,
+    mask: u64,
+) -> Result<u64, IpcError> {
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(IpcError::InvalidEndpoint)?;
+
+    Ok(notification.poll(mask))
 }

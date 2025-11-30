@@ -9,10 +9,19 @@
 
 mod frame;
 mod heap;
-mod virt;
+pub mod virt;
 
 pub use frame::FrameAllocator;
-pub use virt::{AddressSpace, VirtualMemory};
+pub use virt::{AddressSpace, VirtualMemory, Protection};
+
+/// Convert physical address to virtual address (identity mapping for kernel)
+#[inline]
+pub fn phys_to_virt(phys: PhysAddr) -> u64 {
+    // In the kernel, physical memory is typically identity-mapped or offset-mapped
+    // For simplicity, we assume identity mapping in the higher half
+    const KERNEL_PHYS_OFFSET: u64 = 0xFFFF_8000_0000_0000;
+    phys.as_u64() + KERNEL_PHYS_OFFSET
+}
 
 use crate::arch::BootInfo;
 use spin::Mutex;
@@ -136,4 +145,20 @@ pub fn free_frame(addr: PhysAddr) {
 /// Allocate contiguous physical frames
 pub fn alloc_frames(count: usize) -> Option<PhysAddr> {
     FRAME_ALLOCATOR.lock().as_mut()?.alloc_frames(count)
+}
+
+/// Allocate contiguous physical memory of specified size
+///
+/// This is used for DMA buffers that require physically contiguous memory.
+pub fn alloc_contiguous(size: u64) -> Option<PhysAddr> {
+    let num_frames = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+    alloc_frames(num_frames)
+}
+
+/// Free contiguous physical memory
+pub fn free_contiguous(addr: PhysAddr, size: u64) {
+    let num_frames = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+    for i in 0..num_frames {
+        free_frame(PhysAddr::new(addr.as_u64() + (i as u64) * PAGE_SIZE));
+    }
 }

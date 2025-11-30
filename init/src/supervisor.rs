@@ -5,9 +5,11 @@ use crate::dependency::DependencyGraph;
 use crate::service::{Service, ServiceState};
 use anyhow::Result;
 use dashmap::DashMap;
+use libnyx_ipc::guardian::GuardianClient;
+use libnyx_ipc::protocol::{CapabilityRequest, Decision};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, error, info, warn};
 
 /// Events emitted by the supervisor
@@ -41,6 +43,8 @@ pub struct Supervisor {
     events: broadcast::Sender<SupervisorEvent>,
     /// Shutdown flag
     shutdown: Arc<tokio::sync::Notify>,
+    /// Guardian client (if enabled)
+    guardian: Option<Arc<Mutex<GuardianClient>>>,
 }
 
 impl Supervisor {
@@ -54,6 +58,49 @@ impl Supervisor {
             services: DashMap::new(),
             events,
             shutdown: Arc::new(tokio::sync::Notify::new()),
+            guardian: None,
+        }
+    }
+
+    /// Initialize Guardian client connection (call before start_all)
+    pub async fn init_guardian(&mut self) -> Result<()> {
+        if !self.config.system.guardian.enabled {
+            info!("Guardian integration disabled");
+            return Ok(());
+        }
+
+        info!("Connecting to Guardian security agent...");
+
+        match GuardianClient::connect().await {
+            Ok(client) => {
+                // Get Guardian status to verify connection
+                let mut client_lock = client;
+                match client_lock.status().await {
+                    Ok(status) => {
+                        info!(
+                            "Connected to Guardian v{} (uptime: {}s, {} requests processed)",
+                            status.version,
+                            status.uptime_secs,
+                            status.requests_processed
+                        );
+                        self.guardian = Some(Arc::new(Mutex::new(client_lock)));
+                    }
+                    Err(e) => {
+                        warn!("Guardian connected but status check failed: {}", e);
+                        self.guardian = Some(Arc::new(Mutex::new(client_lock)));
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                if self.config.system.guardian.required {
+                    error!("Guardian connection failed (required): {}", e);
+                    Err(anyhow::anyhow!("Guardian connection required but failed: {}", e))
+                } else {
+                    warn!("Guardian connection failed (not required), continuing without: {}", e);
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -146,8 +193,84 @@ impl Supervisor {
             service_name, capabilities
         );
 
-        // TODO: Implement actual Guardian IPC
-        // For now, auto-approve
+        // If Guardian is not connected, auto-approve (based on config)
+        let guardian = match &self.guardian {
+            Some(g) => g.clone(),
+            None => {
+                if self.config.system.guardian.auto_approve_without_guardian {
+                    debug!("Guardian not connected, auto-approving capabilities for {}", service_name);
+                    return Ok(());
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "Guardian required but not connected, cannot approve capabilities for {}",
+                        service_name
+                    ));
+                }
+            }
+        };
+
+        // Request each capability from Guardian
+        let mut client = guardian.lock().await;
+        let mut denied_caps = Vec::new();
+
+        for cap in capabilities {
+            let request = CapabilityRequest::new(cap.clone())
+                .with_context("service", service_name)
+                .with_context("action", "start");
+
+            match client.check_capability_full(request).await {
+                Ok(decision) => {
+                    match decision.decision {
+                        Decision::Allow => {
+                            debug!("Guardian approved capability '{}' for {}", cap, service_name);
+                        }
+                        Decision::Sandbox => {
+                            info!(
+                                "Guardian approved '{}' for {} with sandbox: {:?}",
+                                cap, service_name, decision.sandbox_config
+                            );
+                            // TODO: Apply sandbox configuration
+                        }
+                        Decision::Deny => {
+                            warn!(
+                                "Guardian denied capability '{}' for {}: {}",
+                                cap, service_name, decision.reason
+                            );
+                            denied_caps.push(cap.clone());
+                        }
+                        Decision::Prompt => {
+                            // For now, treat prompt as deny in automated context
+                            warn!(
+                                "Guardian requires user prompt for '{}' (treating as deny): {}",
+                                cap, decision.reason
+                            );
+                            denied_caps.push(cap.clone());
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Guardian capability check failed for '{}' on {}: {}",
+                        cap, service_name, e
+                    );
+                    // Treat Guardian errors as denied if strict mode
+                    if self.config.system.guardian.strict_mode {
+                        denied_caps.push(cap.clone());
+                    }
+                }
+            }
+        }
+
+        // If any capabilities were denied, fail the service start
+        if !denied_caps.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Guardian denied capabilities for {}: {:?}",
+                service_name,
+                denied_caps
+            ));
+        }
+
+        info!("All capabilities approved for {} by Guardian", service_name);
         Ok(())
     }
 
