@@ -59,7 +59,7 @@ impl Default for SystemConfig {
 }
 
 /// Guardian security integration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardianConfig {
     /// Enable Guardian for capability approval
     #[serde(default = "default_true")]
@@ -72,6 +72,31 @@ pub struct GuardianConfig {
     /// Default policy for unapproved requests
     #[serde(default)]
     pub default_policy: SecurityPolicy,
+
+    /// Require Guardian to be available (fail if not reachable)
+    #[serde(default)]
+    pub required: bool,
+
+    /// Strict mode: treat Guardian errors as denials
+    #[serde(default)]
+    pub strict_mode: bool,
+
+    /// Auto-approve capabilities if Guardian is not connected
+    #[serde(default = "default_true")]
+    pub auto_approve_without_guardian: bool,
+}
+
+impl Default for GuardianConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            socket: default_guardian_socket(),
+            default_policy: SecurityPolicy::default(),
+            required: false,
+            strict_mode: false,
+            auto_approve_without_guardian: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
