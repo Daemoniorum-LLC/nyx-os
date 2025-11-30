@@ -567,6 +567,35 @@ pub fn get_process(pid: ProcessId) -> Option<Process> {
     PROCESSES.read().get(&pid).cloned()
 }
 
+/// Get a mutable reference to a process (for timetravel restore)
+pub fn get_process_mut(pid: ProcessId) -> Option<ProcessGuard> {
+    let processes = PROCESSES.write();
+    if processes.contains_key(&pid) {
+        Some(ProcessGuard { processes, pid })
+    } else {
+        None
+    }
+}
+
+/// Guard for mutable process access
+pub struct ProcessGuard {
+    processes: spin::RwLockWriteGuard<'static, alloc::collections::BTreeMap<ProcessId, Process>>,
+    pid: ProcessId,
+}
+
+impl core::ops::Deref for ProcessGuard {
+    type Target = Process;
+    fn deref(&self) -> &Self::Target {
+        self.processes.get(&self.pid).unwrap()
+    }
+}
+
+impl core::ops::DerefMut for ProcessGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.processes.get_mut(&self.pid).unwrap()
+    }
+}
+
 impl Clone for Process {
     fn clone(&self) -> Self {
         Self {

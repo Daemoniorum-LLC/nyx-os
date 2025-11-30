@@ -486,6 +486,12 @@ impl PageMapper {
         flush_tlb_page(virt);
         Ok(phys)
     }
+
+    /// Translate virtual address to physical address
+    pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
+        let walker = PageTableWalker::new(self.root);
+        walker.translate(virt)
+    }
 }
 
 /// Mapping errors

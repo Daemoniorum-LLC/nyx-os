@@ -235,6 +235,47 @@ impl AddressSpace {
     pub fn activate(&self) {
         crate::arch::x86_64::paging::switch_address_space(self.page_table_root);
     }
+
+    /// Get iterator over memory regions (for checkpointing)
+    pub fn regions(&self) -> impl Iterator<Item = &Vma> {
+        self.vmas.values()
+    }
+
+    /// Translate virtual address to physical address
+    pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
+        let mapper = PageMapper::new(self.page_table_root);
+        mapper.translate(virt)
+    }
+
+    /// Map a range of addresses with given protection
+    pub fn map_range(
+        &mut self,
+        start: VirtAddr,
+        size: u64,
+        protection: Protection,
+    ) -> Result<(), VmError> {
+        let aligned_size = (size + super::PAGE_SIZE - 1) & !(super::PAGE_SIZE - 1);
+
+        // Map using anonymous backing (pages allocated on demand)
+        self.map(
+            start,
+            aligned_size,
+            protection,
+            VmaBacking::Anonymous,
+        )?;
+
+        // Pre-allocate and map pages
+        let mut addr = start.as_u64();
+        let end = start.as_u64() + aligned_size;
+
+        while addr < end {
+            let frame = super::alloc_frame().ok_or(VmError::OutOfMemory)?;
+            self.map_page(VirtAddr::new(addr), frame, protection)?;
+            addr += super::PAGE_SIZE;
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for AddressSpace {

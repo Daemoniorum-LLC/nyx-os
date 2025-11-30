@@ -34,8 +34,6 @@ pub mod mem;
 pub mod process;
 pub mod sched;
 pub mod tensor;
-
-#[cfg(feature = "time-travel")]
 pub mod timetravel;
 
 mod panic;
@@ -96,12 +94,9 @@ pub unsafe fn kernel_main(boot_info: &arch::BootInfo) -> ! {
         tensor::init();
     }
 
-    // Phase 8: Time-travel subsystem (if enabled)
-    #[cfg(feature = "time-travel")]
-    {
-        log::debug!("Initializing time-travel subsystem");
-        timetravel::init();
-    }
+    // Phase 8: Time-travel subsystem
+    log::debug!("Initializing time-travel subsystem");
+    timetravel::init();
 
     // Phase 9: Load initrd
     if let Some(initrd) = boot_info.initrd {

@@ -133,6 +133,17 @@ impl CSpace {
         }
         new_cspace
     }
+
+    /// Export all capabilities as a BTreeMap (for checkpointing)
+    pub fn export_all(&self) -> alloc::collections::BTreeMap<u32, Capability> {
+        let mut map = alloc::collections::BTreeMap::new();
+        for i in 0..CNODE_SIZE {
+            if let CSlot::Cap(cap) = &self.root.slots[i] {
+                map.insert(i as u32, *cap);
+            }
+        }
+        map
+    }
 }
 
 impl CNode {
