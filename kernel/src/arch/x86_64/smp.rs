@@ -307,9 +307,13 @@ fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
     let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
     unsafe {
         asm!(
+            // Save rbx (callee-saved, may be used by LLVM)
+            "push rbx",
             "cpuid",
+            "mov {ebx_out:e}, ebx",
+            "pop rbx",
+            ebx_out = out(reg) ebx,
             inout("eax") leaf => eax,
-            out("ebx") ebx,
             out("ecx") ecx,
             out("edx") edx,
             options(nostack, preserves_flags)

@@ -307,7 +307,10 @@ pub fn submit_inference(
 fn find_gpu_device() -> Option<u32> {
     let devices = DEVICES.read();
     devices.iter()
-        .find(|d| matches!(d.device_type, AcceleratorType::Gpu))
+        .find(|d| matches!(d.device_type,
+            AcceleratorType::NvidiaCuda | AcceleratorType::AmdRocm |
+            AcceleratorType::IntelOneApi | AcceleratorType::AppleMetal |
+            AcceleratorType::VulkanCompute))
         .map(|d| d.id)
 }
 
@@ -315,6 +318,8 @@ fn find_gpu_device() -> Option<u32> {
 fn find_npu_device() -> Option<u32> {
     let devices = DEVICES.read();
     devices.iter()
-        .find(|d| matches!(d.device_type, AcceleratorType::Npu))
+        .find(|d| matches!(d.device_type,
+            AcceleratorType::QualcommHexagon | AcceleratorType::IntelNpu |
+            AcceleratorType::AppleAne | AcceleratorType::GoogleTpu))
         .map(|d| d.id)
 }

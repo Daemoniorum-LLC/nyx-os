@@ -77,10 +77,10 @@ pub fn init() {
         // Reload code segment (far jump)
         asm!(
             "push {sel}",
-            "lea {tmp}, [rip + 1f]",
+            "lea {tmp}, [rip + 2f]",
             "push {tmp}",
             "retfq",
-            "1:",
+            "2:",
             sel = in(reg) selectors::KERNEL_CODE.0 as u64,
             tmp = lateout(reg) _,
             options(preserves_flags)

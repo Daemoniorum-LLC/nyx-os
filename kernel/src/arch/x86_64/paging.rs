@@ -96,13 +96,16 @@ fn has_smap() -> bool {
 /// Read MSR
 unsafe fn rdmsr(msr: u32) -> u64 {
     let (low, high): (u32, u32);
-    asm!(
-        "rdmsr",
-        in("ecx") msr,
-        out("eax") low,
-        out("edx") high,
-        options(nostack, preserves_flags)
-    );
+    // SAFETY: rdmsr is safe when called with valid MSR index
+    unsafe {
+        asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") low,
+            out("edx") high,
+            options(nostack, preserves_flags)
+        );
+    }
     ((high as u64) << 32) | (low as u64)
 }
 
@@ -110,13 +113,16 @@ unsafe fn rdmsr(msr: u32) -> u64 {
 unsafe fn wrmsr(msr: u32, value: u64) {
     let low = value as u32;
     let high = (value >> 32) as u32;
-    asm!(
-        "wrmsr",
-        in("ecx") msr,
-        in("eax") low,
-        in("edx") high,
-        options(nostack, preserves_flags)
-    );
+    // SAFETY: wrmsr is safe when called with valid MSR index and value
+    unsafe {
+        asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") low,
+            in("edx") high,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
 /// CPUID instruction
@@ -124,9 +130,13 @@ fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
     let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
     unsafe {
         asm!(
+            // Save rbx (callee-saved, may be used by LLVM)
+            "push rbx",
             "cpuid",
+            "mov {ebx_out:e}, ebx",
+            "pop rbx",
+            ebx_out = out(reg) ebx,
             inout("eax") leaf => eax,
-            out("ebx") ebx,
             out("ecx") ecx,
             out("edx") edx,
             options(nostack, preserves_flags)
@@ -140,9 +150,13 @@ fn cpuid_extended(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
     let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
     unsafe {
         asm!(
+            // Save rbx (callee-saved, may be used by LLVM)
+            "push rbx",
             "cpuid",
+            "mov {ebx_out:e}, ebx",
+            "pop rbx",
+            ebx_out = out(reg) ebx,
             inout("eax") leaf => eax,
-            out("ebx") ebx,
             inout("ecx") subleaf => ecx,
             out("edx") edx,
             options(nostack, preserves_flags)

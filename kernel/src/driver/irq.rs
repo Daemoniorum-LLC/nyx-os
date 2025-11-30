@@ -205,12 +205,14 @@ pub fn handle_irq(vector: u8) {
 pub fn wait_irq(irq: u8) -> Result<(), DriverError> {
     validate_irq(irq)?;
 
-    let handlers = IRQ_HANDLERS.read();
-    if let Some(handler) = &handlers[irq as usize] {
-        drop(handlers);
+    let notification = {
+        let handlers = IRQ_HANDLERS.read();
+        handlers[irq as usize].as_ref().map(|h| h.notification)
+    };
 
+    if let Some(notification) = notification {
         // Wait on the notification object
-        crate::ipc::wait(handler.notification, 1 << irq, None)
+        crate::ipc::wait(notification, 1 << irq, None)
             .map_err(|_| DriverError::HardwareError)?;
 
         // Clear pending count

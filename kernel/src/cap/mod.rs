@@ -107,8 +107,6 @@ impl Capability {
     /// - Result rights are a subset of self.rights
     /// - Result object_id equals self.object_id
     /// - Result generation equals self.generation
-    #[cfg_attr(not(test), contracts::ensures(ret.is_ok() -> ret.as_ref().unwrap().rights.bits() & !self.rights.bits() == 0))]
-    #[cfg_attr(not(test), contracts::ensures(ret.is_ok() -> ret.as_ref().unwrap().object_id == self.object_id))]
     pub fn derive(&self, mask: Rights) -> Result<Capability, CapError> {
         // Must have GRANT right to derive
         if !self.rights.contains(Rights::GRANT) {

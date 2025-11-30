@@ -4,9 +4,11 @@ use super::{VirtAddr, PhysAddr, PAGE_SIZE};
 use crate::arch::x86_64::paging::{PageMapper, PageFlags, flush_tlb_page};
 use crate::cap::ObjectId;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use bitflags::bitflags;
 
 /// Virtual address space
+#[derive(Clone)]
 pub struct AddressSpace {
     /// Unique ID
     pub id: ObjectId,
@@ -175,7 +177,7 @@ impl AddressSpace {
     }
 
     /// Map a single page
-    fn map_page(
+    pub fn map_page(
         &mut self,
         virt: VirtAddr,
         phys: PhysAddr,

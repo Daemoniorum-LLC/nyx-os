@@ -80,7 +80,7 @@ impl Checkpoint {
 
         Ok(Self {
             id,
-            process_id: process.id,
+            process_id: process.pid,
             name,
             created_at,
             memory,
@@ -128,7 +128,7 @@ impl MemorySnapshot {
                 start: region.start,
                 end: region.end,
                 protection: region.protection.bits(),
-                flags: region.flags,
+                flags: region.flags.bits(),
             };
             regions.push(region_snapshot);
 
@@ -206,7 +206,7 @@ pub struct ThreadSnapshot {
 }
 
 /// CPU register state (x86_64)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[repr(C)]
 pub struct RegisterState {
     // General purpose registers
@@ -239,6 +239,20 @@ pub struct RegisterState {
     pub gs: u64,
     // FPU/SSE state (simplified - real impl would save full XSAVE area)
     pub fpu_state: [u8; 512],
+}
+
+impl Default for RegisterState {
+    fn default() -> Self {
+        Self {
+            rax: 0, rbx: 0, rcx: 0, rdx: 0,
+            rsi: 0, rdi: 0, rbp: 0, rsp: 0,
+            r8: 0, r9: 0, r10: 0, r11: 0,
+            r12: 0, r13: 0, r14: 0, r15: 0,
+            rip: 0, rflags: 0,
+            cs: 0, ss: 0, ds: 0, es: 0, fs: 0, gs: 0,
+            fpu_state: [0; 512],
+        }
+    }
 }
 
 /// Capability space snapshot
@@ -306,10 +320,15 @@ fn capture_threads(process: &Process) -> Result<Vec<ThreadSnapshot>, TimeTravelE
             let snapshot = ThreadSnapshot {
                 thread_id,
                 registers: RegisterState::default(), // Would capture actual state
-                tls_base: thread.tls_base,
-                stack_pointer: thread.context.rsp,
-                instruction_pointer: thread.context.rip,
-                state: thread.state as u8,
+                tls_base: 0, // TLS base would come from fs/gs base
+                stack_pointer: thread.registers.rsp,
+                instruction_pointer: thread.registers.rip,
+                state: match thread.state {
+                    crate::sched::ThreadState::Ready => 0,
+                    crate::sched::ThreadState::Running => 1,
+                    crate::sched::ThreadState::Blocked(_) => 2,
+                    crate::sched::ThreadState::Terminated => 3,
+                },
             };
             snapshots.push(snapshot);
         }
@@ -342,7 +361,10 @@ fn restore_to_existing(
     restore_threads(&mut process, &checkpoint.threads)?;
 
     // Restore capability space
-    process.cspace = checkpoint.cspace.slots.clone().into_iter().collect();
+    process.cspace = crate::cap::create_cspace();
+    for (&slot, &cap) in &checkpoint.cspace.slots {
+        let _ = process.cspace.insert(slot as usize, cap);
+    }
 
     Ok(())
 }
@@ -431,9 +453,9 @@ fn restore_threads(
     for snapshot in snapshots {
         if let Some(thread) = threads.get_mut(&snapshot.thread_id) {
             // Restore register state
-            thread.context.rsp = snapshot.stack_pointer;
-            thread.context.rip = snapshot.instruction_pointer;
-            thread.tls_base = snapshot.tls_base;
+            thread.registers.rsp = snapshot.stack_pointer;
+            thread.registers.rip = snapshot.instruction_pointer;
+            // TLS base would be restored via fs/gs base MSR
             // Additional register restoration would go here
         }
     }

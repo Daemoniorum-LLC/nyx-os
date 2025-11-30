@@ -256,11 +256,28 @@ impl Ipv6Addr {
     }
 }
 
+impl core::fmt::Display for Ipv6Addr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let segs = self.segments();
+        write!(f, "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+            segs[0], segs[1], segs[2], segs[3], segs[4], segs[5], segs[6], segs[7])
+    }
+}
+
 /// IP address (v4 or v6)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum IpAddr {
     V4(Ipv4Addr),
     V6(Ipv6Addr),
+}
+
+impl core::fmt::Display for IpAddr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            IpAddr::V4(addr) => write!(f, "{}", addr),
+            IpAddr::V6(addr) => write!(f, "{}", addr),
+        }
+    }
 }
 
 impl IpAddr {
@@ -292,7 +309,7 @@ impl From<Ipv6Addr> for IpAddr {
 }
 
 /// Socket address
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SocketAddr {
     pub ip: IpAddr,
     pub port: u16,

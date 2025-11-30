@@ -3,7 +3,8 @@
 //! Supports both CPIO (newc format) and USTAR (TAR) archives.
 //! This is a read-only filesystem for booting.
 
-use alloc::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use super::{FsError, FileStat, FileType, DirEntry};

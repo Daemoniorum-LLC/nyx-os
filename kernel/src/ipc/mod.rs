@@ -554,6 +554,7 @@ fn error_to_code(err: &IpcError) -> i64 {
         IpcError::WouldBlock => -9,
         IpcError::Disconnected => -10,
         IpcError::InvalidOperation => -11,
+        IpcError::InternalError => -12,
     }
 }
 
@@ -598,7 +599,7 @@ pub fn receive(
         .ok_or(IpcError::InvalidEndpoint)?;
 
     let msg = endpoint.receive()?;
-    Ok(msg.data)
+    Ok(msg.data().to_vec())
 }
 
 /// Synchronous call: send request and wait for reply

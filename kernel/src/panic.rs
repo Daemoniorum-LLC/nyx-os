@@ -18,9 +18,7 @@ fn panic(info: &PanicInfo) -> ! {
         );
     }
 
-    if let Some(message) = info.message() {
-        log::error!("  {}", message);
-    }
+    log::error!("  {}", info.message());
 
     // Halt forever
     loop {

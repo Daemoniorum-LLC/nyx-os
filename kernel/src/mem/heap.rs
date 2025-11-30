@@ -88,6 +88,9 @@ struct SlabAllocator {
     buddy: BuddyAllocator,
 }
 
+// SAFETY: SlabAllocator is only accessed through the LockedHeap's Mutex
+unsafe impl Send for SlabAllocator {}
+
 impl SlabAllocator {
     fn new(start: usize, size: usize) -> Self {
         Self {
@@ -193,6 +196,13 @@ struct FreeObject {
     next: Option<NonNull<FreeObject>>,
 }
 
+// SAFETY: FreeObject is only accessed through the LockedHeap's Mutex
+// The pointers are to heap memory that we control
+unsafe impl Send for FreeObject {}
+
+// SAFETY: SlabCache is only accessed through the LockedHeap's Mutex
+unsafe impl Send for SlabCache {}
+
 impl SlabCache {
     const fn new(object_size: usize) -> Self {
         Self {
@@ -274,6 +284,13 @@ struct BuddyBlock {
     next: Option<NonNull<BuddyBlock>>,
     order: usize,
 }
+
+// SAFETY: BuddyBlock is only accessed through the LockedHeap's Mutex
+// The pointers are to heap memory that we control
+unsafe impl Send for BuddyBlock {}
+
+// SAFETY: BuddyAllocator is only accessed through the LockedHeap's Mutex
+unsafe impl Send for BuddyAllocator {}
 
 impl BuddyAllocator {
     fn new(base: usize, size: usize) -> Self {

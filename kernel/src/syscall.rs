@@ -8,7 +8,7 @@ use crate::ipc;
 use crate::mem::{VirtAddr, PAGE_SIZE};
 use crate::process::{ProcessId, SpawnArgs, SpawnError};
 use crate::sched::{SchedClass, ThreadState, BlockReason};
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::time::Duration;
 
@@ -346,7 +346,7 @@ fn handle_poll(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
 
 fn handle_cap_derive(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let src_cap = regs.arg0;
-    let new_rights = Rights::from_bits_truncate(regs.arg1 as u32);
+    let new_rights = Rights::from_bits_truncate(regs.arg1);
 
     match crate::cap::derive(ObjectId::from_raw(src_cap), new_rights) {
         Ok(cap) => Ok(cap.object_id.as_u64()),

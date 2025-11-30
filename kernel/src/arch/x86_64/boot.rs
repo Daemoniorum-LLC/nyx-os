@@ -95,30 +95,33 @@ pub unsafe extern "C" fn _start() -> ! {
     // or in 32-bit mode by GRUB/Multiboot
 
     // For now, assume 64-bit mode (modern bootloader)
-    asm!(
-        // Clear direction flag
-        "cld",
+    // SAFETY: This is the entry point, we have full control
+    unsafe {
+        asm!(
+            // Clear direction flag
+            "cld",
 
-        // Set up stack (linker provides _boot_stack_top)
-        "lea rsp, [rip + {stack_top}]",
+            // Set up stack (linker provides _boot_stack_top)
+            "lea rsp, [rip + {stack_top}]",
 
-        // Zero BSS section
-        "lea rdi, [rip + {bss_start}]",
-        "lea rcx, [rip + {bss_end}]",
-        "sub rcx, rdi",
-        "shr rcx, 3",  // Convert to qwords
-        "xor eax, eax",
-        "rep stosq",
+            // Zero BSS section
+            "lea rdi, [rip + {bss_start}]",
+            "lea rcx, [rip + {bss_end}]",
+            "sub rcx, rdi",
+            "shr rcx, 3",  // Convert to qwords
+            "xor eax, eax",
+            "rep stosq",
 
-        // Jump to Rust boot code
-        "jmp {boot_rust}",
+            // Jump to Rust boot code
+            "jmp {boot_rust}",
 
-        stack_top = sym _boot_stack_top,
-        bss_start = sym _bss_start,
-        bss_end = sym _bss_end,
-        boot_rust = sym boot_stage2,
-        options(noreturn)
-    );
+            stack_top = sym _boot_stack_top,
+            bss_start = sym _bss_start,
+            bss_end = sym _bss_end,
+            boot_rust = sym boot_stage2,
+            options(noreturn)
+        );
+    }
 }
 
 /// Second stage boot (in Rust)
@@ -137,12 +140,14 @@ unsafe extern "C" fn boot_stage2() -> ! {
     super::init();
 
     // Build boot info structure
-    let boot_info = build_boot_info();
+    // SAFETY: Called during boot with proper initialization
+    let boot_info = unsafe { build_boot_info() };
 
     crate::serial_println!("[BOOT] Jumping to kernel_main");
 
     // Call kernel main
-    crate::kernel_main(&boot_info)
+    // SAFETY: Called during boot, proper initialization done
+    unsafe { crate::kernel_main(&boot_info) }
 }
 
 /// Build boot information from detected hardware
@@ -150,8 +155,9 @@ unsafe fn build_boot_info() -> BootInfo {
     // For now, return minimal boot info
     // A real implementation would parse multiboot/UEFI info
 
-    let kernel_start = &_kernel_start as *const u8 as u64;
-    let kernel_end = &_kernel_end as *const u8 as u64;
+    // SAFETY: These are linker-provided symbols for kernel boundaries
+    let kernel_start = unsafe { &_kernel_start as *const u8 as u64 };
+    let kernel_end = unsafe { &_kernel_end as *const u8 as u64 };
 
     crate::serial_println!(
         "[BOOT] Kernel: {:#x} - {:#x} ({} KB)",

@@ -302,13 +302,15 @@ impl SerialPort {
     /// Read from a register
     #[inline]
     unsafe fn read_reg(&self, offset: u16) -> u8 {
-        inb(self.base + offset)
+        // SAFETY: Caller ensures valid port offset
+        unsafe { inb(self.base + offset) }
     }
 
     /// Write to a register
     #[inline]
     unsafe fn write_reg(&self, offset: u16, value: u8) {
-        outb(self.base + offset, value);
+        // SAFETY: Caller ensures valid port offset and value
+        unsafe { outb(self.base + offset, value); }
     }
 }
 
@@ -430,24 +432,30 @@ pub fn init_logging() {
 
 /// Read byte from I/O port
 #[inline]
-unsafe fn inb(port: u16) -> u8 {
+pub unsafe fn inb(port: u16) -> u8 {
     let value: u8;
-    asm!(
-        "in al, dx",
-        in("dx") port,
-        out("al") value,
-        options(nostack, preserves_flags)
-    );
+    // SAFETY: Caller ensures valid port address
+    unsafe {
+        asm!(
+            "in al, dx",
+            in("dx") port,
+            out("al") value,
+            options(nostack, preserves_flags)
+        );
+    }
     value
 }
 
 /// Write byte to I/O port
 #[inline]
-unsafe fn outb(port: u16, value: u8) {
-    asm!(
-        "out dx, al",
-        in("dx") port,
-        in("al") value,
-        options(nostack, preserves_flags)
-    );
+pub unsafe fn outb(port: u16, value: u8) {
+    // SAFETY: Caller ensures valid port address
+    unsafe {
+        asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") value,
+            options(nostack, preserves_flags)
+        );
+    }
 }

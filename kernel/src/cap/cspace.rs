@@ -10,6 +10,7 @@ pub const DEFAULT_QUOTA: usize = 4096;
 const CNODE_SIZE: usize = 256;
 
 /// Capability space - radix tree of capabilities
+#[derive(Clone)]
 pub struct CSpace {
     root: Box<CNode>,
     count: usize,

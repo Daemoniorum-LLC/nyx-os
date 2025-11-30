@@ -377,22 +377,28 @@ fn config_write_u32(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
 // ============================================================================
 
 unsafe fn outl(port: u16, value: u32) {
-    asm!(
-        "out dx, eax",
-        in("dx") port,
-        in("eax") value,
-        options(nostack, preserves_flags)
-    );
+    // SAFETY: Caller ensures valid PCI configuration port
+    unsafe {
+        asm!(
+            "out dx, eax",
+            in("dx") port,
+            in("eax") value,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
 unsafe fn inl(port: u16) -> u32 {
     let value: u32;
-    asm!(
-        "in eax, dx",
-        out("eax") value,
-        in("dx") port,
-        options(nostack, preserves_flags)
-    );
+    // SAFETY: Caller ensures valid PCI configuration port
+    unsafe {
+        asm!(
+            "in eax, dx",
+            out("eax") value,
+            in("dx") port,
+            options(nostack, preserves_flags)
+        );
+    }
     value
 }
 

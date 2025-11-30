@@ -146,35 +146,38 @@ unsafe fn context_switch(regs: &RegisterState) {
     // For now, assume all threads share kernel address space
 
     // Restore registers and return to thread
-    asm!(
-        // Restore general purpose registers
-        "mov r15, [{regs} + 0x00]",
-        "mov r14, [{regs} + 0x08]",
-        "mov r13, [{regs} + 0x10]",
-        "mov r12, [{regs} + 0x18]",
-        "mov r11, [{regs} + 0x20]",
-        "mov r10, [{regs} + 0x28]",
-        "mov r9,  [{regs} + 0x30]",
-        "mov r8,  [{regs} + 0x38]",
-        "mov rbp, [{regs} + 0x40]",
-        "mov rdi, [{regs} + 0x48]",
-        "mov rsi, [{regs} + 0x50]",
-        "mov rdx, [{regs} + 0x58]",
-        "mov rcx, [{regs} + 0x60]",
-        "mov rbx, [{regs} + 0x68]",
-        // rax is last since we need it for the jump
-        "mov rsp, [{regs} + 0x78]",  // RSP
-        // Set up iret frame
-        "push [{regs} + 0x98]",      // SS
-        "push [{regs} + 0x78]",      // RSP
-        "push [{regs} + 0x88]",      // RFLAGS
-        "push [{regs} + 0x90]",      // CS
-        "push [{regs} + 0x80]",      // RIP
-        "mov rax, [{regs} + 0x70]",  // RAX
-        "iretq",
-        regs = in(reg) regs as *const RegisterState,
-        options(noreturn)
-    );
+    // SAFETY: regs pointer is valid, we're in kernel mode
+    unsafe {
+        asm!(
+            // Restore general purpose registers
+            "mov r15, [{regs} + 0x00]",
+            "mov r14, [{regs} + 0x08]",
+            "mov r13, [{regs} + 0x10]",
+            "mov r12, [{regs} + 0x18]",
+            "mov r11, [{regs} + 0x20]",
+            "mov r10, [{regs} + 0x28]",
+            "mov r9,  [{regs} + 0x30]",
+            "mov r8,  [{regs} + 0x38]",
+            "mov rbp, [{regs} + 0x40]",
+            "mov rdi, [{regs} + 0x48]",
+            "mov rsi, [{regs} + 0x50]",
+            "mov rdx, [{regs} + 0x58]",
+            "mov rcx, [{regs} + 0x60]",
+            "mov rbx, [{regs} + 0x68]",
+            // rax is last since we need it for the jump
+            "mov rsp, [{regs} + 0x78]",  // RSP
+            // Set up iret frame
+            "push [{regs} + 0x98]",      // SS
+            "push [{regs} + 0x78]",      // RSP
+            "push [{regs} + 0x88]",      // RFLAGS
+            "push [{regs} + 0x90]",      // CS
+            "push [{regs} + 0x80]",      // RIP
+            "mov rax, [{regs} + 0x70]",  // RAX
+            "iretq",
+            regs = in(reg) regs as *const RegisterState,
+            options(noreturn)
+        );
+    }
 }
 
 /// Run a thread until it yields or is preempted
@@ -399,7 +402,17 @@ impl CpuScheduler {
         let threads = THREADS.read();
         if let Some(thread) = threads.get(&thread_id) {
             match thread.sched_class {
-                SchedClass::Deadline => self.deadline_queue.enqueue(thread_id),
+                SchedClass::Deadline => {
+                    // For deadline tasks, create a default entry
+                    // Real implementation would get deadline params from thread
+                    let entry = deadline::DeadlineEntry {
+                        thread_id,
+                        deadline: 0, // Would be set based on thread params
+                        runtime_remaining: 0,
+                        period: 0,
+                    };
+                    self.deadline_queue.enqueue(entry);
+                }
                 SchedClass::RtFifo | SchedClass::RtRr => self.cfs_queue.enqueue(thread_id), // Use CFS for now
                 _ => self.cfs_queue.enqueue(thread_id),
             }

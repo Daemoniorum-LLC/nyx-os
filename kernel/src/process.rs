@@ -266,7 +266,7 @@ pub fn spawn(args: SpawnArgs) -> Result<ProcessId, SpawnError> {
     let parent_pid = current_process_id();
 
     // Create new process
-    let mut proc = Process::new(&args.path, Some(parent_pid));
+    let mut proc = Process::new(&args.path, parent_pid);
 
     // Set up environment
     for (key, value) in args.env {
@@ -769,7 +769,7 @@ pub fn stop(pid: ProcessId) {
         for thread_id in &proc.threads {
             let mut threads = crate::sched::THREADS.write();
             if let Some(thread) = threads.get_mut(thread_id) {
-                thread.state = ThreadState::Blocked;
+                thread.state = ThreadState::Blocked(crate::sched::BlockReason::Sleep);
             }
         }
     }

@@ -94,12 +94,18 @@ pub fn init() {
 
 /// Set an interrupt handler (no error code)
 unsafe fn set_handler(vector: usize, handler: usize, dpl: u8, ist: u8) {
-    IDT[vector] = IdtEntry::new(handler as u64, gdt::selectors::KERNEL_CODE.0, ist, dpl, false);
+    // SAFETY: IDT is only modified during init, before interrupts are enabled
+    unsafe {
+        IDT[vector] = IdtEntry::new(handler as u64, gdt::selectors::KERNEL_CODE.0, ist, dpl, false);
+    }
 }
 
 /// Set an interrupt handler with error code
 unsafe fn set_handler_with_error(vector: usize, handler: usize, dpl: u8, ist: u8) {
-    IDT[vector] = IdtEntry::new(handler as u64, gdt::selectors::KERNEL_CODE.0, ist, dpl, true);
+    // SAFETY: IDT is only modified during init, before interrupts are enabled
+    unsafe {
+        IDT[vector] = IdtEntry::new(handler as u64, gdt::selectors::KERNEL_CODE.0, ist, dpl, true);
+    }
 }
 
 /// IDT entry (16 bytes in 64-bit mode)
