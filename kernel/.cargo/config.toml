@@ -11,6 +11,8 @@ build-std-features = ["compiler-builtins-mem"]
 linker = "rust-lld"
 rustflags = [
     "-C", "link-arg=-Tlinker.ld",
+    "-C", "link-arg=--no-eh-frame-hdr",
+    "-C", "link-arg=--strip-all",
     "-C", "code-model=kernel",
     "-C", "relocation-model=static",
 ]
