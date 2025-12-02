@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "Nyx secrets and keyring daemon"
 
+[lib]
+name = "nyx_cipher"
+path = "src/lib.rs"
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }

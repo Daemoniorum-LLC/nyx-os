@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rand::RngCore;
 use thiserror::Error;
 
@@ -25,7 +26,7 @@ impl SessionToken {
     pub fn generate() -> Self {
         let mut bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut bytes);
-        Self(base64::encode(&bytes))
+        Self(BASE64.encode(&bytes))
     }
 
     pub fn as_str(&self) -> &str {

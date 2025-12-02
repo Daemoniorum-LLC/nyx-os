@@ -3,23 +3,19 @@
 //! Run with: cargo bench -p nyx-cipher
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
-
-// Note: These benchmarks reference the cipher crate's internals.
-// In a real setup, you'd import from the crate:
-// use nyx_cipher::crypto::{EncryptionKey, hash_password, verify_password};
+use nyx_cipher::crypto::{EncryptionKey, hash_password, generate_salt};
 
 /// Benchmark encryption at various data sizes
 fn bench_encryption(c: &mut Criterion) {
     let mut group = c.benchmark_group("encryption");
+    let key = EncryptionKey::generate();
 
     for size in [64, 256, 1024, 4096, 16384].iter() {
         group.throughput(Throughput::Bytes(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            // Would use actual EncryptionKey here
             let data = vec![0u8; size];
             b.iter(|| {
-                black_box(&data);
-                // key.encrypt(&data)
+                key.encrypt(black_box(&data)).unwrap()
             });
         });
     }
@@ -30,14 +26,15 @@ fn bench_encryption(c: &mut Criterion) {
 /// Benchmark decryption at various data sizes
 fn bench_decryption(c: &mut Criterion) {
     let mut group = c.benchmark_group("decryption");
+    let key = EncryptionKey::generate();
 
     for size in [64, 256, 1024, 4096, 16384].iter() {
         group.throughput(Throughput::Bytes(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let data = vec![0u8; size + 12 + 16]; // nonce + data + tag
+            let plaintext = vec![0u8; size];
+            let ciphertext = key.encrypt(&plaintext).unwrap();
             b.iter(|| {
-                black_box(&data);
-                // key.decrypt(&data)
+                key.decrypt(black_box(&ciphertext)).unwrap()
             });
         });
     }
@@ -45,7 +42,7 @@ fn bench_decryption(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark password hashing (intentionally slow)
+/// Benchmark password hashing (intentionally slow - this is a security feature)
 fn bench_password_hashing(c: &mut Criterion) {
     let mut group = c.benchmark_group("password_hashing");
     group.sample_size(10); // Fewer samples since hashing is slow
@@ -53,8 +50,7 @@ fn bench_password_hashing(c: &mut Criterion) {
     group.bench_function("hash_password", |b| {
         let password = "secure_password_123!@#";
         b.iter(|| {
-            black_box(password);
-            // hash_password(password)
+            hash_password(black_box(password)).unwrap()
         });
     });
 
@@ -68,10 +64,9 @@ fn bench_key_derivation(c: &mut Criterion) {
 
     group.bench_function("derive_from_password", |b| {
         let password = "my_secret_password";
-        let salt = [0u8; 16];
+        let salt = generate_salt();
         b.iter(|| {
-            black_box((password, &salt));
-            // EncryptionKey::derive_from_password(password, &salt)
+            EncryptionKey::derive_from_password(black_box(password), black_box(&salt)).unwrap()
         });
     });
 
