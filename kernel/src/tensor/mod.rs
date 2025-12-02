@@ -74,6 +74,15 @@ pub fn init() {
 }
 
 /// Enumerate available compute devices
+///
+/// This function probes for all available compute accelerators:
+/// - NVIDIA GPUs via PCI (CUDA)
+/// - AMD GPUs via PCI (ROCm)
+/// - Intel GPUs via PCI (oneAPI)
+/// - Apple GPUs via Device Tree (Metal)
+/// - Intel NPUs via ACPI
+/// - Qualcomm Hexagon via ACPI
+/// - Apple Neural Engine via Device Tree
 fn enumerate_devices() {
     let mut devices = DEVICES.write();
 
@@ -87,41 +96,386 @@ fn enumerate_devices() {
         capabilities: DeviceCapabilities::CPU_BASELINE,
     });
 
-    // Probe for GPUs
+    // Probe for GPUs via PCI - always enabled regardless of feature flags
+    // The feature flags control runtime support, not detection
+    enumerate_nvidia_devices(&mut devices);
+    enumerate_amd_devices(&mut devices);
+    enumerate_intel_devices(&mut devices);
+
+    // Probe for Apple Silicon GPU (device tree based)
+    enumerate_apple_devices(&mut devices);
+
+    // Probe for NPUs
+    enumerate_all_npu_devices(&mut devices);
+
+    // Feature-gated probing for additional driver initialization
     #[cfg(feature = "cuda")]
     enumerate_cuda_devices(&mut devices);
 
     #[cfg(feature = "metal")]
     enumerate_metal_devices(&mut devices);
 
-    // Probe for NPUs
     #[cfg(feature = "npu")]
     enumerate_npu_devices(&mut devices);
 }
 
 fn num_cpus() -> u32 {
-    // TODO: Get from ACPI/device tree
-    1
+    crate::arch::x86_64::smp::cpu_count()
 }
 
 fn available_system_memory() -> u64 {
-    // TODO: Get from memory manager
-    1024 * 1024 * 1024 // 1 GB placeholder
+    // Get from memory manager
+    crate::mem::get_total_memory().unwrap_or(1024 * 1024 * 1024)
 }
 
+// ============================================================================
+// PCI Vendor/Device IDs for GPU detection
+// ============================================================================
+
+/// NVIDIA vendor ID
+const PCI_VENDOR_NVIDIA: u16 = 0x10DE;
+/// AMD vendor ID
+const PCI_VENDOR_AMD: u16 = 0x1002;
+/// Intel vendor ID
+const PCI_VENDOR_INTEL: u16 = 0x8086;
+/// Apple vendor ID (for virtualized Metal)
+const PCI_VENDOR_APPLE: u16 = 0x106B;
+
+/// PCI class code for display controller
+const PCI_CLASS_DISPLAY: u8 = 0x03;
+/// PCI class code for processing accelerator
+const PCI_CLASS_ACCELERATOR: u8 = 0x12;
+
+/// CUDA device enumeration via PCI probing
 #[cfg(feature = "cuda")]
-fn enumerate_cuda_devices(_devices: &mut Vec<ComputeDevice>) {
-    // TODO: CUDA device enumeration
+fn enumerate_cuda_devices(devices: &mut Vec<ComputeDevice>) {
+    enumerate_nvidia_devices(devices);
 }
 
+/// Always available - probe PCI for NVIDIA GPUs
+fn enumerate_nvidia_devices(devices: &mut Vec<ComputeDevice>) {
+    if let Some(pci_devices) = crate::driver::pci::enumerate_devices() {
+        for pci_dev in pci_devices {
+            if pci_dev.vendor_id == PCI_VENDOR_NVIDIA
+                && (pci_dev.class_code == PCI_CLASS_DISPLAY || pci_dev.class_code == PCI_CLASS_ACCELERATOR)
+            {
+                let device = identify_nvidia_gpu(&pci_dev);
+                if let Some(dev) = device {
+                    log::info!("Detected NVIDIA GPU: {} (device 0x{:04X})", dev.name, pci_dev.device_id);
+                    devices.push(dev);
+                }
+            }
+        }
+    }
+}
+
+/// Identify NVIDIA GPU capabilities from PCI device ID
+fn identify_nvidia_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDevice> {
+    // Device ID ranges for NVIDIA architectures
+    // These are simplified - real implementation would have full device tables
+    let (arch_name, compute_units, caps) = match pci_dev.device_id {
+        // Hopper (H100, etc.) - 0x2300-0x23FF
+        0x2300..=0x23FF => (
+            "Hopper",
+            132u32, // H100 has 132 SMs
+            DeviceCapabilities::NVIDIA_MODERN | DeviceCapabilities::FP8_COMPUTE |
+            DeviceCapabilities::HIGH_BW_INTERCONNECT | DeviceCapabilities::SPECULATIVE_DECODE
+        ),
+        // Ada Lovelace (RTX 40xx) - 0x2600-0x27FF
+        0x2600..=0x27FF => (
+            "Ada Lovelace",
+            128u32,
+            DeviceCapabilities::NVIDIA_MODERN | DeviceCapabilities::FP8_COMPUTE
+        ),
+        // Ampere (RTX 30xx, A100) - 0x2200-0x22FF, 0x2000-0x20FF
+        0x2000..=0x22FF => (
+            "Ampere",
+            82u32,
+            DeviceCapabilities::NVIDIA_MODERN
+        ),
+        // Turing (RTX 20xx, T4) - 0x1E00-0x1FFF
+        0x1E00..=0x1FFF => (
+            "Turing",
+            72u32,
+            DeviceCapabilities::NVIDIA_MODERN & !DeviceCapabilities::BF16_COMPUTE
+        ),
+        // Volta (V100) - 0x1D00-0x1DFF
+        0x1D00..=0x1DFF => (
+            "Volta",
+            80u32,
+            DeviceCapabilities::NVIDIA_MODERN & !DeviceCapabilities::BF16_COMPUTE &
+            !DeviceCapabilities::SPARSE_OPS
+        ),
+        // Pascal and older - basic CUDA support
+        0x1000..=0x1CFF => (
+            "Pascal/Maxwell",
+            40u32,
+            DeviceCapabilities::FP16_COMPUTE | DeviceCapabilities::FP64_COMPUTE |
+            DeviceCapabilities::ASYNC_COMPUTE | DeviceCapabilities::CONCURRENT_KERNELS
+        ),
+        _ => return None,
+    };
+
+    // Query VRAM size from BAR1
+    let vram_bytes = pci_dev.bar_size(1).unwrap_or(8 * 1024 * 1024 * 1024);
+
+    Some(ComputeDevice {
+        id: (devices_count() + 1) as u32,
+        device_type: AcceleratorType::NvidiaCuda,
+        name: alloc::format!("NVIDIA {} GPU", arch_name),
+        compute_units,
+        memory_bytes: vram_bytes,
+        capabilities: caps,
+    })
+}
+
+/// AMD GPU enumeration via PCI probing
+fn enumerate_amd_devices(devices: &mut Vec<ComputeDevice>) {
+    if let Some(pci_devices) = crate::driver::pci::enumerate_devices() {
+        for pci_dev in pci_devices {
+            if pci_dev.vendor_id == PCI_VENDOR_AMD
+                && (pci_dev.class_code == PCI_CLASS_DISPLAY || pci_dev.class_code == PCI_CLASS_ACCELERATOR)
+            {
+                let device = identify_amd_gpu(&pci_dev);
+                if let Some(dev) = device {
+                    log::info!("Detected AMD GPU: {} (device 0x{:04X})", dev.name, pci_dev.device_id);
+                    devices.push(dev);
+                }
+            }
+        }
+    }
+}
+
+/// Identify AMD GPU capabilities
+fn identify_amd_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDevice> {
+    // AMD device ID ranges (simplified)
+    let (arch_name, compute_units, caps) = match pci_dev.device_id {
+        // RDNA 3 (RX 7xxx)
+        0x7400..=0x74FF | 0x7440..=0x744F => (
+            "RDNA 3",
+            96u32,
+            DeviceCapabilities::FP16_COMPUTE | DeviceCapabilities::INT8_COMPUTE |
+            DeviceCapabilities::ASYNC_COMPUTE | DeviceCapabilities::CONCURRENT_KERNELS |
+            DeviceCapabilities::TENSOR_CORES
+        ),
+        // RDNA 2 (RX 6xxx)
+        0x73A0..=0x73FF => (
+            "RDNA 2",
+            80u32,
+            DeviceCapabilities::FP16_COMPUTE | DeviceCapabilities::INT8_COMPUTE |
+            DeviceCapabilities::ASYNC_COMPUTE | DeviceCapabilities::CONCURRENT_KERNELS
+        ),
+        // CDNA 3 (MI300)
+        0x7408..=0x740F => (
+            "CDNA 3",
+            228u32,
+            DeviceCapabilities::FP16_COMPUTE | DeviceCapabilities::BF16_COMPUTE |
+            DeviceCapabilities::FP64_COMPUTE | DeviceCapabilities::INT8_COMPUTE |
+            DeviceCapabilities::TENSOR_CORES | DeviceCapabilities::HARDWARE_MMA |
+            DeviceCapabilities::HIGH_BW_INTERCONNECT | DeviceCapabilities::FLASH_ATTENTION |
+            DeviceCapabilities::PAGED_ATTENTION
+        ),
+        // CDNA 2 (MI200)
+        0x7388..=0x738F => (
+            "CDNA 2",
+            220u32,
+            DeviceCapabilities::FP16_COMPUTE | DeviceCapabilities::BF16_COMPUTE |
+            DeviceCapabilities::FP64_COMPUTE | DeviceCapabilities::INT8_COMPUTE |
+            DeviceCapabilities::TENSOR_CORES | DeviceCapabilities::HIGH_BW_INTERCONNECT
+        ),
+        _ => return None,
+    };
+
+    let vram_bytes = pci_dev.bar_size(0).unwrap_or(16 * 1024 * 1024 * 1024);
+
+    Some(ComputeDevice {
+        id: (devices_count() + 1) as u32,
+        device_type: AcceleratorType::AmdRocm,
+        name: alloc::format!("AMD {} GPU", arch_name),
+        compute_units,
+        memory_bytes: vram_bytes,
+        capabilities: caps,
+    })
+}
+
+/// Intel GPU enumeration
+fn enumerate_intel_devices(devices: &mut Vec<ComputeDevice>) {
+    if let Some(pci_devices) = crate::driver::pci::enumerate_devices() {
+        for pci_dev in pci_devices {
+            if pci_dev.vendor_id == PCI_VENDOR_INTEL
+                && pci_dev.class_code == PCI_CLASS_DISPLAY
+            {
+                // Check for discrete GPUs (Arc series) vs integrated
+                if pci_dev.device_id >= 0x5690 && pci_dev.device_id <= 0x56FF {
+                    // Intel Arc discrete GPU
+                    let vram = pci_dev.bar_size(0).unwrap_or(16 * 1024 * 1024 * 1024);
+                    devices.push(ComputeDevice {
+                        id: (devices_count() + 1) as u32,
+                        device_type: AcceleratorType::IntelOneApi,
+                        name: alloc::string::String::from("Intel Arc GPU"),
+                        compute_units: 32,
+                        memory_bytes: vram,
+                        capabilities: DeviceCapabilities::FP16_COMPUTE |
+                            DeviceCapabilities::INT8_COMPUTE |
+                            DeviceCapabilities::TENSOR_CORES |
+                            DeviceCapabilities::ASYNC_COMPUTE,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Metal device enumeration (for Apple Silicon or virtualized environments)
 #[cfg(feature = "metal")]
-fn enumerate_metal_devices(_devices: &mut Vec<ComputeDevice>) {
-    // TODO: Metal device enumeration
+fn enumerate_metal_devices(devices: &mut Vec<ComputeDevice>) {
+    enumerate_apple_devices(devices);
 }
 
+fn enumerate_apple_devices(devices: &mut Vec<ComputeDevice>) {
+    // Check for Apple Silicon via ACPI or device tree
+    if let Some(apple_gpu) = detect_apple_silicon_gpu() {
+        devices.push(apple_gpu);
+    }
+}
+
+/// Detect Apple Silicon GPU (M1/M2/M3/M4)
+fn detect_apple_silicon_gpu() -> Option<ComputeDevice> {
+    // On Apple Silicon, GPU info is in device tree
+    // For now, probe via PCI or ACPI
+    let dt = crate::driver::devicetree::get_device_tree()?;
+
+    // Look for "apple,gpu" compatible node
+    let gpu_node = dt.find_compatible("apple,gpu")?;
+
+    let model = gpu_node.property_string("apple,gpu-model").unwrap_or("Unknown");
+    let core_count = gpu_node.property_u32("apple,gpu-core-count").unwrap_or(8);
+
+    // Determine generation from model string
+    let (caps, memory_estimate) = if model.contains("M4") || model.contains("m4") {
+        (DeviceCapabilities::APPLE_SILICON | DeviceCapabilities::TENSOR_CORES |
+         DeviceCapabilities::BF16_COMPUTE | DeviceCapabilities::FLASH_ATTENTION,
+         32 * 1024 * 1024 * 1024u64)
+    } else if model.contains("M3") || model.contains("m3") {
+        (DeviceCapabilities::APPLE_SILICON | DeviceCapabilities::TENSOR_CORES,
+         24 * 1024 * 1024 * 1024u64)
+    } else if model.contains("M2") || model.contains("m2") {
+        (DeviceCapabilities::APPLE_SILICON,
+         16 * 1024 * 1024 * 1024u64)
+    } else {
+        (DeviceCapabilities::APPLE_SILICON,
+         8 * 1024 * 1024 * 1024u64)
+    };
+
+    Some(ComputeDevice {
+        id: (devices_count() + 1) as u32,
+        device_type: AcceleratorType::AppleMetal,
+        name: alloc::format!("Apple {} GPU", model),
+        compute_units: core_count,
+        memory_bytes: memory_estimate, // Unified memory
+        capabilities: caps,
+    })
+}
+
+/// NPU device enumeration
 #[cfg(feature = "npu")]
-fn enumerate_npu_devices(_devices: &mut Vec<ComputeDevice>) {
-    // TODO: NPU device enumeration
+fn enumerate_npu_devices(devices: &mut Vec<ComputeDevice>) {
+    enumerate_all_npu_devices(devices);
+}
+
+fn enumerate_all_npu_devices(devices: &mut Vec<ComputeDevice>) {
+    // Intel NPU (Meteor Lake, Lunar Lake)
+    if let Some(intel_npu) = detect_intel_npu() {
+        devices.push(intel_npu);
+    }
+
+    // Qualcomm Hexagon
+    if let Some(hexagon) = detect_qualcomm_hexagon() {
+        devices.push(hexagon);
+    }
+
+    // Apple Neural Engine
+    if let Some(ane) = detect_apple_ane() {
+        devices.push(ane);
+    }
+}
+
+/// Detect Intel NPU via ACPI
+fn detect_intel_npu() -> Option<ComputeDevice> {
+    // Intel NPUs appear as ACPI devices
+    let acpi = crate::driver::acpi::get_acpi_tables()?;
+
+    // Look for INT34xx or INTC10xx device IDs
+    let npu_dev = acpi.find_device_by_hid(&["INT3472", "INT3400", "INTC1040", "INTC1041"])?;
+
+    let (name, tops) = if npu_dev.hid.starts_with("INTC104") {
+        ("Intel Lunar Lake NPU", 48) // ~48 TOPS
+    } else if npu_dev.hid.starts_with("INTC103") || npu_dev.hid.starts_with("INT34") {
+        ("Intel Meteor Lake NPU", 34) // ~34 TOPS
+    } else {
+        ("Intel NPU", 10)
+    };
+
+    Some(ComputeDevice {
+        id: (devices_count() + 1) as u32,
+        device_type: AcceleratorType::IntelNpu,
+        name: alloc::string::String::from(name),
+        compute_units: tops as u32, // TOPS as proxy for compute units
+        memory_bytes: 0, // Shared system memory
+        capabilities: DeviceCapabilities::INT8_COMPUTE | DeviceCapabilities::INT4_COMPUTE |
+            DeviceCapabilities::UNIFIED_MEMORY | DeviceCapabilities::TRANSFORMER_OPT,
+    })
+}
+
+/// Detect Qualcomm Hexagon DSP/NPU
+fn detect_qualcomm_hexagon() -> Option<ComputeDevice> {
+    // Qualcomm Hexagon appears via ACPI or as platform device
+    let acpi = crate::driver::acpi::get_acpi_tables()?;
+
+    // Look for QCOM Hexagon device
+    let hexagon_dev = acpi.find_device_by_hid(&["QCOM0A50", "QCOM24A1", "QCOM0A90"])?;
+
+    Some(ComputeDevice {
+        id: (devices_count() + 1) as u32,
+        device_type: AcceleratorType::QualcommHexagon,
+        name: alloc::string::String::from("Qualcomm Hexagon NPU"),
+        compute_units: 45, // TOPS estimate
+        memory_bytes: 0,
+        capabilities: DeviceCapabilities::INT8_COMPUTE | DeviceCapabilities::INT4_COMPUTE |
+            DeviceCapabilities::UNIFIED_MEMORY | DeviceCapabilities::TRANSFORMER_OPT,
+    })
+}
+
+/// Detect Apple Neural Engine
+fn detect_apple_ane() -> Option<ComputeDevice> {
+    let dt = crate::driver::devicetree::get_device_tree()?;
+
+    // Look for "apple,ane" compatible node
+    let ane_node = dt.find_compatible("apple,ane")?;
+
+    let version = ane_node.property_u32("apple,ane-version").unwrap_or(1);
+    let tops = match version {
+        4 => 38,  // M4 ANE
+        3 => 18,  // M3 ANE
+        2 => 15,  // M2 ANE
+        _ => 11,  // M1 ANE
+    };
+
+    Some(ComputeDevice {
+        id: (devices_count() + 1) as u32,
+        device_type: AcceleratorType::AppleAne,
+        name: alloc::format!("Apple Neural Engine v{}", version),
+        compute_units: tops as u32,
+        memory_bytes: 0, // Unified memory
+        capabilities: DeviceCapabilities::INT8_COMPUTE | DeviceCapabilities::INT4_COMPUTE |
+            DeviceCapabilities::UNIFIED_MEMORY | DeviceCapabilities::TRANSFORMER_OPT |
+            DeviceCapabilities::FP16_COMPUTE,
+    })
+}
+
+/// Get current device count (for ID assignment)
+fn devices_count() -> usize {
+    DEVICES.read().len()
 }
 
 /// Allocate a tensor buffer

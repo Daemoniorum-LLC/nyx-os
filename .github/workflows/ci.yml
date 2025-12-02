@@ -126,4 +126,8 @@ jobs:
 
       - name: Run security audit
         run: cargo audit
-        continue-on-error: true  # Advisory only for now
+        # MANDATORY: Security audits must pass. No known vulnerabilities allowed.
+        # If a vulnerability is found but cannot be fixed immediately:
+        # 1. Open an issue documenting the CVE and mitigation plan
+        # 2. Add to .cargo/audit.toml with justification and timeline
+        # 3. Never ignore security issues silently

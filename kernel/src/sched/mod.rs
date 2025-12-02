@@ -112,7 +112,7 @@ fn switch_to(next_id: ThreadId) {
     }
 
     // Save current thread state and restore next thread state
-    let (current_regs, next_regs, next_stack) = {
+    let switch_info = {
         let mut threads = THREADS.write();
 
         // Save current thread's state
@@ -125,31 +125,45 @@ fn switch_to(next_id: ThreadId) {
         if let Some(next) = next {
             next.state = ThreadState::Running;
             let regs = next.registers;
-            let stack = next.registers.rsp;
-            (current_id, regs, stack)
+            let page_table_root = next.address_space.page_table_root();
+            Some((regs, page_table_root))
         } else {
-            return;
+            None
         }
     };
 
-    // Update current thread
-    CURRENT_THREAD.store(next_id.0, Ordering::SeqCst);
+    // Update current thread and perform context switch
+    if let Some((next_regs, page_table_root)) = switch_info {
+        CURRENT_THREAD.store(next_id.0, Ordering::SeqCst);
 
-    // Perform actual context switch
-    unsafe {
-        context_switch(&next_regs);
+        // Perform actual context switch with address space switch
+        // SAFETY: next_regs is valid, page_table_root points to valid page tables
+        unsafe {
+            context_switch(&next_regs, page_table_root);
+        }
     }
 }
 
 /// Perform context switch (restore registers and jump)
-unsafe fn context_switch(regs: &RegisterState) {
-    // Switch address space if needed (CR3)
-    // For now, assume all threads share kernel address space
+///
+/// # Safety
+///
+/// - `regs` must point to a valid RegisterState
+/// - `page_table_root` must be a valid physical address of a page table
+/// - Must be called from kernel mode
+unsafe fn context_switch(regs: &RegisterState, page_table_root: crate::mem::PhysAddr) {
+    // Switch address space by loading new CR3
+    // This is essential for process isolation - each process has its own
+    // page tables and must see its own memory view
+    let cr3_value = page_table_root.as_u64();
 
     // Restore registers and return to thread
-    // SAFETY: regs pointer is valid, we're in kernel mode
+    // SAFETY: regs pointer is valid, we're in kernel mode, page_table_root is valid
     unsafe {
         asm!(
+            // Switch address space - load new CR3
+            // This invalidates TLB entries for the old address space
+            "mov cr3, {cr3}",
             // Restore general purpose registers
             "mov r15, [{regs} + 0x00]",
             "mov r14, [{regs} + 0x08]",
@@ -175,6 +189,7 @@ unsafe fn context_switch(regs: &RegisterState) {
             "push [{regs} + 0x80]",      // RIP
             "mov rax, [{regs} + 0x70]",  // RAX
             "iretq",
+            cr3 = in(reg) cr3_value,
             regs = in(reg) regs as *const RegisterState,
             options(noreturn)
         );
@@ -547,60 +562,90 @@ const LOAD_BALANCE_INTERVAL: u64 = 100;
 const LOAD_IMBALANCE_THRESHOLD: usize = 2;
 
 /// Perform load balancing across CPUs
+///
+/// This function atomically steals work from the busiest CPU and migrates it
+/// to the idlest CPU using split borrows to avoid dropping and re-acquiring
+/// references (which could cause TOCTOU races if we weren't holding the lock).
 pub fn load_balance() {
     let cpu_count = crate::arch::x86_64::smp::cpu_count() as usize;
     if cpu_count <= 1 {
         return; // No balancing needed for single CPU
     }
 
-    let current_cpu = current_cpu_id() as usize;
-
-    // Find idle and busy CPUs
     let mut per_cpu = PER_CPU.write();
 
-    // Calculate load for each CPU
-    let loads: alloc::vec::Vec<(usize, usize)> = per_cpu
-        .iter()
-        .enumerate()
-        .map(|(i, sched)| (i, sched.queue_len()))
-        .collect();
+    // Can't balance if we don't have enough CPUs
+    if per_cpu.len() < 2 {
+        return;
+    }
 
-    // Find busiest and idlest CPUs
-    let (busiest_cpu, busiest_load) = loads
-        .iter()
-        .max_by_key(|(_, load)| *load)
-        .map(|(cpu, load)| (*cpu, *load))
-        .unwrap_or((0, 0));
+    // Calculate load for each CPU and find busiest/idlest in single pass
+    let mut busiest_cpu = 0;
+    let mut busiest_load = 0usize;
+    let mut idlest_cpu = 0;
+    let mut idlest_load = usize::MAX;
 
-    let (idlest_cpu, idlest_load) = loads
-        .iter()
-        .min_by_key(|(_, load)| *load)
-        .map(|(cpu, load)| (*cpu, *load))
-        .unwrap_or((0, 0));
+    for (i, sched) in per_cpu.iter().enumerate() {
+        let load = sched.queue_len();
+        if load > busiest_load {
+            busiest_load = load;
+            busiest_cpu = i;
+        }
+        if load < idlest_load {
+            idlest_load = load;
+            idlest_cpu = i;
+        }
+    }
 
     // Check if imbalance warrants migration
+    if busiest_cpu == idlest_cpu {
+        return; // Same CPU, nothing to do
+    }
+
     if busiest_load.saturating_sub(idlest_load) < LOAD_IMBALANCE_THRESHOLD {
         return; // Load is balanced enough
     }
 
-    // Steal work from busiest to idlest
-    if let Some(busiest_sched) = per_cpu.get_mut(busiest_cpu) {
-        if let Some(thread_id) = busiest_sched.steal_thread() {
-            drop(busiest_sched);
-            if let Some(idlest_sched) = per_cpu.get_mut(idlest_cpu) {
-                idlest_sched.enqueue(thread_id);
-                log::trace!(
-                    "Migrated thread {:?} from CPU {} to CPU {}",
-                    thread_id,
-                    busiest_cpu,
-                    idlest_cpu
-                );
+    // Use split_at_mut to get simultaneous mutable access to both CPUs
+    // This avoids the TOCTOU issue by ensuring atomic steal+enqueue
+    let thread_to_migrate = if busiest_cpu < idlest_cpu {
+        let (left, right) = per_cpu.split_at_mut(idlest_cpu);
+        let busiest_sched = &mut left[busiest_cpu];
+        let idlest_sched = &mut right[0];
 
-                // Send IPI to wake idle CPU if needed
-                if idlest_load == 0 {
-                    crate::arch::x86_64::smp::send_ipi_to(idlest_cpu as u32, RESCHEDULE_IPI_VECTOR);
-                }
-            }
+        if let Some(thread_id) = busiest_sched.steal_thread() {
+            idlest_sched.enqueue(thread_id);
+            Some((thread_id, busiest_cpu, idlest_cpu))
+        } else {
+            None
+        }
+    } else {
+        let (left, right) = per_cpu.split_at_mut(busiest_cpu);
+        let idlest_sched = &mut left[idlest_cpu];
+        let busiest_sched = &mut right[0];
+
+        if let Some(thread_id) = busiest_sched.steal_thread() {
+            idlest_sched.enqueue(thread_id);
+            Some((thread_id, busiest_cpu, idlest_cpu))
+        } else {
+            None
+        }
+    };
+
+    // Log migration and send IPI outside the borrow scope
+    if let Some((thread_id, from_cpu, to_cpu)) = thread_to_migrate {
+        log::trace!(
+            "Migrated thread {:?} from CPU {} to CPU {}",
+            thread_id,
+            from_cpu,
+            to_cpu
+        );
+
+        // Send IPI to wake idle CPU if it was idle
+        if idlest_load == 0 {
+            // Drop lock before sending IPI to avoid deadlock
+            drop(per_cpu);
+            crate::arch::x86_64::smp::send_ipi_to(to_cpu as u32, RESCHEDULE_IPI_VECTOR);
         }
     }
 }
