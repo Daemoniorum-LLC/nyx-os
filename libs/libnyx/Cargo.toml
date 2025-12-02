@@ -45,3 +45,8 @@ path = "tests/error_codes.rs"
 [[test]]
 name = "capability_rights"
 path = "tests/capability_rights.rs"
+
+# Benchmarks run on the host to measure data structure performance
+[[bench]]
+name = "data_structures"
+path = "benches/data_structures.rs"
