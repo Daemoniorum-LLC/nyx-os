@@ -70,7 +70,24 @@ pub mod time;
 
 // Re-export commonly used types at the crate root
 pub use cap::{Capability, ObjectType, Rights};
-pub use ipc::{IpcRing, Message, MAX_MESSAGE_SIZE};
+pub use ipc::{
+    // Core types
+    IpcRing, Message, MAX_MESSAGE_SIZE,
+    // High-performance types
+    AlignedMessage, AtomicMessagePool, MessagePool,
+    // Shared memory
+    MappedView, SharedRegion, SharedView,
+    // Batch operations
+    CompletionEntry, OpType, SubmissionBatch, SubmissionEntry,
+    // Polling mode
+    PollingRing,
+    // Registered buffers
+    RegisteredBuffer,
+    // Affinity
+    AffinityHint,
+    // Flags
+    ring_flags, shm_prot,
+};
 pub use memory::{flags as mmap_flags, prot, PAGE_SIZE};
 pub use process::{ProcessId, WaitResult};
 pub use syscall::Error;
@@ -81,7 +98,13 @@ pub use time::Instant;
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::cap::{Capability, Rights};
-    pub use crate::ipc::{self, IpcRing, Message};
+    pub use crate::ipc::{
+        self, IpcRing, Message,
+        // High-performance
+        AtomicMessagePool, MessagePool, PollingRing,
+        SharedRegion, RegisteredBuffer,
+        SubmissionBatch, AffinityHint,
+    };
     pub use crate::memory::{self, alloc, free, mmap, munmap};
     pub use crate::process::{self, exit, getpid, spawn, wait, ProcessId};
     pub use crate::syscall::Error;

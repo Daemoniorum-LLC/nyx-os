@@ -183,6 +183,33 @@ pub mod nr {
     /// Returns: current bits
     pub const POLL: u64 = 8;
 
+    /// Get ring memory mapping information for polling mode
+    /// Args: ring_cap, info_ptr
+    /// Returns: 0 on success
+    pub const RING_MMAP_INFO: u64 = 9;
+
+    /// Wake the kernel polling thread
+    /// Args: ring_cap
+    pub const RING_WAKE: u64 = 10;
+
+    /// Set IPC affinity hint for an endpoint
+    /// Args: endpoint_cap, hint
+    pub const IPC_AFFINITY: u64 = 11;
+
+    /// Get IPC affinity hint for an endpoint
+    /// Args: endpoint_cap
+    /// Returns: hint value
+    pub const IPC_GET_AFFINITY: u64 = 12;
+
+    /// Send from a registered buffer (fast path)
+    /// Args: dest_cap, buf_idx, offset, len, flags
+    pub const SEND_REGISTERED: u64 = 13;
+
+    /// Receive into a registered buffer (fast path)
+    /// Args: src_cap, buf_idx, offset, max_len, flags
+    /// Returns: bytes received
+    pub const RECV_REGISTERED: u64 = 14;
+
     // ========================================================================
     // Capabilities (16-31)
     // ========================================================================
@@ -235,6 +262,34 @@ pub mod nr {
     /// Free physical memory
     /// Args: addr, size
     pub const MEM_FREE: u64 = 36;
+
+    /// Create a shared memory region
+    /// Args: size, flags
+    /// Returns: capability ID or negative error
+    pub const SHM_CREATE: u64 = 40;
+
+    /// Map a shared memory region
+    /// Args: shm_cap, addr_hint, size, prot
+    /// Returns: mapped address or negative error
+    pub const SHM_MAP: u64 = 41;
+
+    /// Unmap a shared memory region
+    /// Args: addr, size
+    pub const SHM_UNMAP: u64 = 42;
+
+    /// Grant shared memory access to another process
+    /// Args: shm_cap, target_cap, prot
+    /// Returns: view capability or negative error
+    pub const SHM_GRANT: u64 = 43;
+
+    /// Register a buffer with the IPC subsystem
+    /// Args: addr, size
+    /// Returns: (index << 32) | cap_id
+    pub const BUF_REGISTER: u64 = 48;
+
+    /// Unregister a buffer
+    /// Args: cap_id
+    pub const BUF_UNREGISTER: u64 = 49;
 
     // ========================================================================
     // Threads (64-79)

@@ -841,3 +841,903 @@ impl IpcRing {
         Error::from_raw(result).map(|n| n as u32)
     }
 }
+
+// ============================================================================
+// Lock-Free Atomic Message Pool
+// ============================================================================
+
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::cell::UnsafeCell;
+
+/// Thread-safe, lock-free message pool
+///
+/// Uses atomic operations for allocation tracking, allowing concurrent
+/// access from multiple threads without locks.
+///
+/// # Example
+/// ```no_run
+/// use std::sync::Arc;
+///
+/// let pool = Arc::new(AtomicMessagePool::<16>::new());
+///
+/// // Can be used from multiple threads
+/// let pool_clone = pool.clone();
+/// std::thread::spawn(move || {
+///     if let Some(idx) = pool_clone.acquire() {
+///         // Use message...
+///         pool_clone.release(idx);
+///     }
+/// });
+/// ```
+pub struct AtomicMessagePool<const N: usize = DEFAULT_POOL_SIZE> {
+    /// Pre-allocated message buffers (UnsafeCell for interior mutability)
+    messages: [UnsafeCell<Message>; N],
+    /// Atomic bitmap tracking which slots are in use
+    in_use: AtomicU64,
+    /// Atomic count of used messages (for fast full check)
+    used_count: AtomicUsize,
+}
+
+impl<const N: usize> AtomicMessagePool<N> {
+    /// Create a new atomic message pool
+    pub fn new() -> Self {
+        assert!(N <= 64, "AtomicMessagePool supports max 64 messages");
+        Self {
+            messages: core::array::from_fn(|_| UnsafeCell::new(Message::new())),
+            in_use: AtomicU64::new(0),
+            used_count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Acquire a message from the pool (lock-free)
+    ///
+    /// Returns the index of the acquired message, or None if pool is exhausted.
+    /// This operation is wait-free for the common case.
+    #[inline]
+    pub fn acquire(&self) -> Option<usize> {
+        loop {
+            let current = self.in_use.load(Ordering::Acquire);
+            let free_mask = !current;
+
+            if free_mask == 0 {
+                return None; // Pool exhausted
+            }
+
+            let idx = free_mask.trailing_zeros() as usize;
+            if idx >= N {
+                return None;
+            }
+
+            let new_mask = current | (1 << idx);
+
+            // Try to atomically claim this slot
+            match self.in_use.compare_exchange_weak(
+                current,
+                new_mask,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    self.used_count.fetch_add(1, Ordering::Relaxed);
+                    return Some(idx);
+                }
+                Err(_) => continue, // Retry on contention
+            }
+        }
+    }
+
+    /// Release a message back to the pool (lock-free)
+    ///
+    /// # Safety
+    /// The caller must ensure no other thread is using this message.
+    #[inline]
+    pub fn release(&self, idx: usize) {
+        debug_assert!(idx < N, "Index out of bounds");
+
+        let mask = 1u64 << idx;
+        let prev = self.in_use.fetch_and(!mask, Ordering::Release);
+
+        debug_assert!(prev & mask != 0, "Double release detected");
+        self.used_count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Get a mutable reference to a message by index
+    ///
+    /// # Safety
+    /// Caller must ensure exclusive access to this index (i.e., they acquired it).
+    #[inline]
+    pub unsafe fn get_mut(&self, idx: usize) -> &mut Message {
+        debug_assert!(idx < N, "Index out of bounds");
+        // SAFETY: Caller guarantees exclusive access via acquire()
+        &mut *self.messages[idx].get()
+    }
+
+    /// Get a reference to a message by index
+    ///
+    /// # Safety
+    /// Caller must ensure they have acquired this index.
+    #[inline]
+    pub unsafe fn get(&self, idx: usize) -> &Message {
+        debug_assert!(idx < N, "Index out of bounds");
+        &*self.messages[idx].get()
+    }
+
+    /// Returns the approximate number of messages in use
+    #[inline]
+    pub fn used(&self) -> usize {
+        self.used_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns the approximate number of free messages
+    #[inline]
+    pub fn available(&self) -> usize {
+        N - self.used()
+    }
+
+    /// Returns the pool capacity
+    #[inline]
+    pub const fn capacity(&self) -> usize {
+        N
+    }
+}
+
+impl<const N: usize> Default for AtomicMessagePool<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// SAFETY: The pool uses atomic operations for thread safety
+// and UnsafeCell for interior mutability
+unsafe impl<const N: usize> Sync for AtomicMessagePool<N> {}
+unsafe impl<const N: usize> Send for AtomicMessagePool<N> {}
+
+// ============================================================================
+// Zero-Copy Shared Memory IPC
+// ============================================================================
+
+/// Protection flags for shared memory regions
+pub mod shm_prot {
+    /// Region is readable
+    pub const READ: u32 = 1 << 0;
+    /// Region is writable
+    pub const WRITE: u32 = 1 << 1;
+    /// Region is executable
+    pub const EXEC: u32 = 1 << 2;
+}
+
+/// A shared memory region for zero-copy IPC
+///
+/// Allows multiple processes to access the same physical memory,
+/// eliminating copy overhead for large data transfers.
+///
+/// # Example
+/// ```no_run
+/// // Create a 1MB shared region
+/// let region = SharedRegion::new(1 << 20)?;
+///
+/// // Write data directly
+/// region.as_mut_slice()[..4].copy_from_slice(b"test");
+///
+/// // Grant read access to another process
+/// let view = region.grant(other_cap, shm_prot::READ)?;
+/// send(other_process, &view.to_bytes(), None)?;
+/// ```
+pub struct SharedRegion {
+    /// Capability to the shared memory object
+    cap: Capability,
+    /// Base address of the mapping
+    base: *mut u8,
+    /// Size of the region
+    size: usize,
+}
+
+impl SharedRegion {
+    /// Create a new shared memory region
+    ///
+    /// # Arguments
+    /// * `size` - Size in bytes (will be rounded up to page size)
+    pub fn new(size: usize) -> Result<Self, Error> {
+        let result = unsafe {
+            syscall::syscall2(nr::SHM_CREATE, size as u64, 0)
+        };
+
+        let cap_id = Error::from_raw(result)?;
+        let cap = Capability::from_raw(cap_id);
+
+        // Map the region into our address space
+        let map_result = unsafe {
+            syscall::syscall4(
+                nr::SHM_MAP,
+                cap.as_raw(),
+                0, // Let kernel choose address
+                size as u64,
+                (shm_prot::READ | shm_prot::WRITE) as u64,
+            )
+        };
+
+        let base = Error::from_raw(map_result)? as *mut u8;
+
+        Ok(Self { cap, base, size })
+    }
+
+    /// Grant access to another process
+    ///
+    /// # Arguments
+    /// * `target` - Capability to the target process/endpoint
+    /// * `protection` - Access rights (shm_prot::READ, shm_prot::WRITE, etc.)
+    ///
+    /// # Returns
+    /// A `SharedView` that can be sent to the other process
+    pub fn grant(&self, target: Capability, protection: u32) -> Result<SharedView, Error> {
+        let result = unsafe {
+            syscall::syscall3(
+                nr::SHM_GRANT,
+                self.cap.as_raw(),
+                target.as_raw(),
+                protection as u64,
+            )
+        };
+
+        let view_cap = Error::from_raw(result)?;
+
+        Ok(SharedView {
+            cap: Capability::from_raw(view_cap),
+            size: self.size,
+            protection,
+        })
+    }
+
+    /// Get the region as a byte slice
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.base, self.size) }
+    }
+
+    /// Get the region as a mutable byte slice
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.base, self.size) }
+    }
+
+    /// Get the base address
+    #[inline]
+    pub fn as_ptr(&self) -> *const u8 {
+        self.base
+    }
+
+    /// Get the mutable base address
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.base
+    }
+
+    /// Get the size of the region
+    #[inline]
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Get the capability handle
+    #[inline]
+    pub fn capability(&self) -> Capability {
+        self.cap
+    }
+}
+
+impl Drop for SharedRegion {
+    fn drop(&mut self) {
+        unsafe {
+            // Unmap the region
+            let _ = syscall::syscall2(nr::SHM_UNMAP, self.base as u64, self.size as u64);
+            // Release the capability
+            let _ = syscall::syscall1(nr::CAP_DROP, self.cap.as_raw());
+        }
+    }
+}
+
+/// A view into a shared region (for sending to other processes)
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SharedView {
+    /// Capability to map this view
+    cap: Capability,
+    /// Size of the shared region
+    size: usize,
+    /// Protection flags
+    protection: u32,
+}
+
+impl SharedView {
+    /// Map this view into the current process
+    pub fn map(&self) -> Result<MappedView, Error> {
+        let result = unsafe {
+            syscall::syscall4(
+                nr::SHM_MAP,
+                self.cap.as_raw(),
+                0,
+                self.size as u64,
+                self.protection as u64,
+            )
+        };
+
+        let base = Error::from_raw(result)? as *mut u8;
+
+        Ok(MappedView {
+            base,
+            size: self.size,
+            protection: self.protection,
+        })
+    }
+
+    /// Serialize to bytes for IPC transfer
+    #[inline]
+    pub fn to_bytes(&self) -> [u8; 24] {
+        let mut buf = [0u8; 24];
+        buf[0..8].copy_from_slice(&self.cap.as_raw().to_le_bytes());
+        buf[8..16].copy_from_slice(&(self.size as u64).to_le_bytes());
+        buf[16..20].copy_from_slice(&self.protection.to_le_bytes());
+        buf
+    }
+
+    /// Deserialize from bytes
+    #[inline]
+    pub fn from_bytes(bytes: &[u8; 24]) -> Self {
+        Self {
+            cap: Capability::from_raw(u64::from_le_bytes(bytes[0..8].try_into().unwrap())),
+            size: u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize,
+            protection: u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+        }
+    }
+}
+
+/// A mapped view of shared memory
+pub struct MappedView {
+    base: *mut u8,
+    size: usize,
+    protection: u32,
+}
+
+impl MappedView {
+    /// Get as a slice (requires READ permission)
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        debug_assert!(self.protection & shm_prot::READ != 0);
+        unsafe { core::slice::from_raw_parts(self.base, self.size) }
+    }
+
+    /// Get as a mutable slice (requires WRITE permission)
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        debug_assert!(self.protection & shm_prot::WRITE != 0);
+        unsafe { core::slice::from_raw_parts_mut(self.base, self.size) }
+    }
+
+    /// Get the size
+    #[inline]
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
+impl Drop for MappedView {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = syscall::syscall2(nr::SHM_UNMAP, self.base as u64, self.size as u64);
+        }
+    }
+}
+
+// ============================================================================
+// SIMD-Optimized Aligned Message
+// ============================================================================
+
+/// Cache line size for alignment
+pub const CACHE_LINE_SIZE: usize = 64;
+
+/// A cache-line aligned message for optimal SIMD performance
+///
+/// Alignment to 64 bytes ensures:
+/// - No false sharing between CPU cores
+/// - Optimal SIMD load/store operations
+/// - Better cache utilization
+#[repr(C, align(64))]
+pub struct AlignedMessage {
+    /// Message tag
+    pub tag: u32,
+    /// Data length
+    pub length: u32,
+    /// Padding to align data to cache line
+    _pad: [u8; 56],
+    /// Aligned data buffer
+    pub data: AlignedBuffer,
+}
+
+/// 64-byte aligned buffer for SIMD operations
+#[repr(C, align(64))]
+pub struct AlignedBuffer {
+    bytes: [u8; MAX_MESSAGE_SIZE],
+}
+
+impl AlignedMessage {
+    /// Create a new aligned message
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            tag: 0,
+            length: 0,
+            _pad: [0; 56],
+            data: AlignedBuffer {
+                bytes: [0; MAX_MESSAGE_SIZE],
+            },
+        }
+    }
+
+    /// Create without zero-initialization (fast path)
+    #[inline]
+    pub unsafe fn new_uninit() -> Self {
+        let mut msg = MaybeUninit::<Self>::uninit();
+        let ptr = msg.as_mut_ptr();
+        (*ptr).tag = 0;
+        (*ptr).length = 0;
+        msg.assume_init()
+    }
+
+    /// Set data with explicit SIMD hints
+    #[inline]
+    pub fn set_data(&mut self, data: &[u8]) {
+        assert!(data.len() <= MAX_MESSAGE_SIZE);
+        self.length = data.len() as u32;
+
+        // Use copy_nonoverlapping for best autovectorization
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                self.data.bytes.as_mut_ptr(),
+                data.len(),
+            );
+        }
+    }
+
+    /// Copy data using explicit 64-byte chunks (AVX-512 friendly)
+    #[inline]
+    pub fn set_data_chunked(&mut self, data: &[u8]) {
+        assert!(data.len() <= MAX_MESSAGE_SIZE);
+        self.length = data.len() as u32;
+
+        let chunks = data.len() / 64;
+        let remainder = data.len() % 64;
+
+        // Copy 64-byte aligned chunks
+        for i in 0..chunks {
+            let src = unsafe { data.as_ptr().add(i * 64) };
+            let dst = unsafe { self.data.bytes.as_mut_ptr().add(i * 64) };
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, 64);
+            }
+        }
+
+        // Copy remainder
+        if remainder > 0 {
+            let offset = chunks * 64;
+            self.data.bytes[offset..offset + remainder]
+                .copy_from_slice(&data[offset..]);
+        }
+    }
+
+    /// Get data as slice
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.data.bytes[..self.length as usize]
+    }
+
+    /// Get the raw buffer
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.data.bytes[..self.length as usize]
+    }
+
+    /// Clear the message
+    #[inline]
+    pub fn clear(&mut self) {
+        self.tag = 0;
+        self.length = 0;
+    }
+}
+
+impl Default for AlignedMessage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// CPU Affinity Hints
+// ============================================================================
+
+/// CPU affinity hint for IPC optimization
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AffinityHint {
+    /// No preference (default scheduling)
+    None = 0,
+    /// Prefer same core as target (lowest latency)
+    SameCore = 1,
+    /// Prefer same L2 cache (good latency, less contention)
+    SameL2 = 2,
+    /// Prefer same NUMA node (good for large data)
+    SameNuma = 3,
+    /// Prefer different core (for parallel workloads)
+    DifferentCore = 4,
+}
+
+/// Set CPU affinity hint for the current thread's IPC
+///
+/// This is a hint to the kernel scheduler to optimize placement
+/// of communicating threads.
+///
+/// # Example
+/// ```no_run
+/// // Request same-core placement for latency-sensitive IPC
+/// set_affinity_hint(endpoint, AffinityHint::SameCore)?;
+/// ```
+pub fn set_affinity_hint(endpoint: Capability, hint: AffinityHint) -> Result<(), Error> {
+    let result = unsafe {
+        syscall::syscall2(nr::IPC_AFFINITY, endpoint.as_raw(), hint as u64)
+    };
+    Error::from_raw(result).map(|_| ())
+}
+
+/// Get the recommended affinity for communicating with an endpoint
+pub fn get_affinity_hint(endpoint: Capability) -> Result<AffinityHint, Error> {
+    let result = unsafe {
+        syscall::syscall1(nr::IPC_GET_AFFINITY, endpoint.as_raw())
+    };
+    let hint = Error::from_raw(result)? as u8;
+    Ok(match hint {
+        0 => AffinityHint::None,
+        1 => AffinityHint::SameCore,
+        2 => AffinityHint::SameL2,
+        3 => AffinityHint::SameNuma,
+        4 => AffinityHint::DifferentCore,
+        _ => AffinityHint::None,
+    })
+}
+
+// ============================================================================
+// Completion Polling Mode
+// ============================================================================
+
+/// Flags for IPC ring setup
+pub mod ring_flags {
+    /// Enable kernel-side polling (eliminates syscalls for submissions)
+    pub const SQPOLL: u32 = 1 << 0;
+    /// Use single issuer mode (no locking needed)
+    pub const SINGLE_ISSUER: u32 = 1 << 1;
+    /// Defer task work to submission time
+    pub const DEFER_TASKRUN: u32 = 1 << 2;
+    /// Use cooperative task running
+    pub const COOP_TASKRUN: u32 = 1 << 3;
+}
+
+/// A polling-mode IPC ring for ultra-low latency
+///
+/// When the kernel polling thread is active, submissions don't
+/// require syscalls - just write to shared memory.
+///
+/// # Example
+/// ```no_run
+/// let ring = PollingRing::new(256, 512, 1000)?; // 1ms idle timeout
+///
+/// // Submit without syscall when kernel thread is polling
+/// ring.submit_nosyscall(&batch);
+///
+/// // Read completions from shared memory
+/// while let Some(cqe) = ring.poll_completion() {
+///     handle_completion(cqe);
+/// }
+/// ```
+pub struct PollingRing {
+    /// Ring capability
+    handle: Capability,
+    /// Submission queue head (shared with kernel)
+    sq_head: *const AtomicU64,
+    /// Submission queue tail (userspace owned)
+    sq_tail: *mut AtomicU64,
+    /// Completion queue head (userspace owned)
+    cq_head: *mut AtomicU64,
+    /// Completion queue tail (shared with kernel)
+    cq_tail: *const AtomicU64,
+    /// Submission queue entries
+    sq_entries: *mut SubmissionEntry,
+    /// Completion queue entries
+    cq_entries: *const CompletionEntry,
+    /// Queue size mask
+    sq_mask: u32,
+    cq_mask: u32,
+}
+
+impl PollingRing {
+    /// Create a new polling-mode IPC ring
+    ///
+    /// # Arguments
+    /// * `sq_size` - Submission queue size (power of 2)
+    /// * `cq_size` - Completion queue size (power of 2)
+    /// * `idle_timeout_ms` - Time before kernel stops polling (0 = never stop)
+    pub fn new(sq_size: u32, cq_size: u32, idle_timeout_ms: u32) -> Result<Self, Error> {
+        assert!(sq_size.is_power_of_two());
+        assert!(cq_size.is_power_of_two());
+
+        let flags = ring_flags::SQPOLL | ring_flags::SINGLE_ISSUER;
+
+        let result = unsafe {
+            syscall::syscall5(
+                nr::RING_SETUP,
+                sq_size as u64,
+                cq_size as u64,
+                flags as u64,
+                idle_timeout_ms as u64,
+                0,
+            )
+        };
+
+        let ring_id = Error::from_raw(result)?;
+        let handle = Capability::from_raw(ring_id);
+
+        // Get ring memory mapping info
+        let mut ring_info = RingMmapInfo::default();
+        let info_result = unsafe {
+            syscall::syscall2(
+                nr::RING_MMAP_INFO,
+                handle.as_raw(),
+                &mut ring_info as *mut _ as u64,
+            )
+        };
+        Error::from_raw(info_result)?;
+
+        Ok(Self {
+            handle,
+            sq_head: ring_info.sq_head as *const AtomicU64,
+            sq_tail: ring_info.sq_tail as *mut AtomicU64,
+            cq_head: ring_info.cq_head as *mut AtomicU64,
+            cq_tail: ring_info.cq_tail as *const AtomicU64,
+            sq_entries: ring_info.sq_entries as *mut SubmissionEntry,
+            cq_entries: ring_info.cq_entries as *const CompletionEntry,
+            sq_mask: sq_size - 1,
+            cq_mask: cq_size - 1,
+        })
+    }
+
+    /// Submit entries without a syscall (polling mode)
+    ///
+    /// Returns the number of entries submitted. Only works when
+    /// the kernel polling thread is active.
+    #[inline]
+    pub fn submit_nosyscall<const N: usize>(&self, batch: &SubmissionBatch<N>) -> u32 {
+        let entries = batch.as_slice();
+        if entries.is_empty() {
+            return 0;
+        }
+
+        unsafe {
+            let tail = (*self.sq_tail).load(Ordering::Relaxed) as u32;
+            let head = (*self.sq_head).load(Ordering::Acquire) as u32;
+            let available = self.sq_mask + 1 - (tail.wrapping_sub(head));
+
+            let to_submit = (entries.len() as u32).min(available);
+
+            for i in 0..to_submit {
+                let idx = (tail + i) & self.sq_mask;
+                core::ptr::write(
+                    self.sq_entries.add(idx as usize),
+                    entries[i as usize],
+                );
+            }
+
+            // Memory barrier before updating tail
+            (*self.sq_tail).store((tail + to_submit) as u64, Ordering::Release);
+
+            to_submit
+        }
+    }
+
+    /// Poll for a completion without syscall
+    #[inline]
+    pub fn poll_completion(&self) -> Option<CompletionEntry> {
+        unsafe {
+            let head = (*self.cq_head).load(Ordering::Relaxed) as u32;
+            let tail = (*self.cq_tail).load(Ordering::Acquire) as u32;
+
+            if head == tail {
+                return None;
+            }
+
+            let idx = head & self.cq_mask;
+            let entry = core::ptr::read(self.cq_entries.add(idx as usize));
+
+            (*self.cq_head).store((head + 1) as u64, Ordering::Release);
+
+            Some(entry)
+        }
+    }
+
+    /// Wake up the kernel polling thread if it's idle
+    pub fn wake_poller(&self) -> Result<(), Error> {
+        let result = unsafe {
+            syscall::syscall1(nr::RING_WAKE, self.handle.as_raw())
+        };
+        Error::from_raw(result).map(|_| ())
+    }
+
+    /// Get the underlying capability handle
+    #[inline]
+    pub fn handle(&self) -> Capability {
+        self.handle
+    }
+}
+
+// SAFETY: PollingRing uses atomic operations and is designed for single-issuer use
+unsafe impl Send for PollingRing {}
+
+/// Ring memory mapping information
+#[repr(C)]
+#[derive(Default)]
+struct RingMmapInfo {
+    sq_head: u64,
+    sq_tail: u64,
+    cq_head: u64,
+    cq_tail: u64,
+    sq_entries: u64,
+    cq_entries: u64,
+}
+
+// ============================================================================
+// Registered Buffers
+// ============================================================================
+
+/// A buffer registered with the kernel for fast IPC
+///
+/// Registered buffers are pinned in memory and pre-mapped in the kernel,
+/// eliminating page table walks on each IPC operation.
+///
+/// # Example
+/// ```no_run
+/// let mut buf = RegisteredBuffer::new(4096)?;
+///
+/// // Write data
+/// buf.as_mut_slice()[..5].copy_from_slice(b"hello");
+///
+/// // Send using the registered buffer (faster than regular send)
+/// ring.send_registered(&buf, 0, 5, endpoint)?;
+/// ```
+pub struct RegisteredBuffer {
+    /// Capability to the registered buffer
+    cap: Capability,
+    /// Buffer pointer
+    ptr: *mut u8,
+    /// Buffer size
+    size: usize,
+    /// Buffer index (for kernel reference)
+    index: u32,
+}
+
+impl RegisteredBuffer {
+    /// Create and register a new buffer
+    pub fn new(size: usize) -> Result<Self, Error> {
+        // Allocate page-aligned memory via mmap
+        let ptr_result = unsafe {
+            syscall::syscall4(
+                nr::MEM_MAP,
+                0, // Let kernel choose address
+                size as u64,
+                (shm_prot::READ | shm_prot::WRITE) as u64,
+                0, // flags
+            )
+        };
+
+        let ptr = Error::from_raw(ptr_result)? as *mut u8;
+
+        // Register the buffer with the IPC subsystem
+        let reg_result = unsafe {
+            syscall::syscall2(nr::BUF_REGISTER, ptr as u64, size as u64)
+        };
+
+        let cap_and_idx = Error::from_raw(reg_result)?;
+        let cap = Capability::from_raw(cap_and_idx & 0xFFFF_FFFF);
+        let index = (cap_and_idx >> 32) as u32;
+
+        Ok(Self { cap, ptr, size, index })
+    }
+
+    /// Get the buffer as a slice
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.ptr, self.size) }
+    }
+
+    /// Get the buffer as a mutable slice
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.ptr, self.size) }
+    }
+
+    /// Get the buffer index (for use in submissions)
+    #[inline]
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// Get the size
+    #[inline]
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Get the capability
+    #[inline]
+    pub fn capability(&self) -> Capability {
+        self.cap
+    }
+}
+
+impl Drop for RegisteredBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            // Unregister the buffer
+            let _ = syscall::syscall1(nr::BUF_UNREGISTER, self.cap.as_raw());
+            // Free the memory
+            let _ = syscall::syscall2(nr::MEM_UNMAP, self.ptr as u64, self.size as u64);
+        }
+    }
+}
+
+/// Extension methods for IpcRing to use registered buffers
+impl IpcRing {
+    /// Send data from a registered buffer (faster path)
+    pub fn send_registered(
+        &self,
+        buf: &RegisteredBuffer,
+        offset: usize,
+        len: usize,
+        dest: Capability,
+    ) -> Result<(), Error> {
+        assert!(offset + len <= buf.size());
+
+        let result = unsafe {
+            syscall::syscall5(
+                nr::SEND_REGISTERED,
+                dest.as_raw(),
+                buf.index() as u64,
+                offset as u64,
+                len as u64,
+                0,
+            )
+        };
+
+        Error::from_raw(result).map(|_| ())
+    }
+
+    /// Receive into a registered buffer (faster path)
+    pub fn receive_registered(
+        &self,
+        buf: &mut RegisteredBuffer,
+        offset: usize,
+        max_len: usize,
+        src: Capability,
+    ) -> Result<usize, Error> {
+        assert!(offset + max_len <= buf.size());
+
+        let result = unsafe {
+            syscall::syscall5(
+                nr::RECV_REGISTERED,
+                src.as_raw(),
+                buf.index() as u64,
+                offset as u64,
+                max_len as u64,
+                0,
+            )
+        };
+
+        Error::from_raw(result).map(|n| n as usize)
+    }
+}
