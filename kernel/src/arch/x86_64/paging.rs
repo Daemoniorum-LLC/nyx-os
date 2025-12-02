@@ -746,3 +746,257 @@ pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
 pub fn virt_to_phys(virt: VirtAddr) -> PhysAddr {
     PhysAddr::new(virt.as_u64() - PHYS_MAP_BASE)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // PageFlags Tests
+    // =========================================================================
+
+    #[test]
+    fn test_page_flags_individual() {
+        assert_eq!(PageFlags::PRESENT.bits(), 1 << 0);
+        assert_eq!(PageFlags::WRITABLE.bits(), 1 << 1);
+        assert_eq!(PageFlags::USER.bits(), 1 << 2);
+        assert_eq!(PageFlags::NO_EXECUTE.bits(), 1 << 63);
+    }
+
+    #[test]
+    fn test_page_flags_combinations() {
+        let rw = PageFlags::PRESENT | PageFlags::WRITABLE;
+        assert!(rw.contains(PageFlags::PRESENT));
+        assert!(rw.contains(PageFlags::WRITABLE));
+        assert!(!rw.contains(PageFlags::USER));
+    }
+
+    #[test]
+    fn test_page_flags_kernel_ro() {
+        let flags = PageFlags::KERNEL_RO;
+        assert!(flags.contains(PageFlags::PRESENT));
+        assert!(!flags.contains(PageFlags::WRITABLE));
+        assert!(!flags.contains(PageFlags::USER));
+    }
+
+    #[test]
+    fn test_page_flags_user_rw() {
+        let flags = PageFlags::USER_RW;
+        assert!(flags.contains(PageFlags::PRESENT));
+        assert!(flags.contains(PageFlags::WRITABLE));
+        assert!(flags.contains(PageFlags::USER));
+    }
+
+    // =========================================================================
+    // PageTableEntry Tests
+    // =========================================================================
+
+    #[test]
+    fn test_entry_empty() {
+        let entry = PageTableEntry::empty();
+        assert_eq!(entry.0, 0);
+        assert!(!entry.is_present());
+    }
+
+    #[test]
+    fn test_entry_new() {
+        let addr = PhysAddr::new(0x1000);
+        let flags = PageFlags::PRESENT | PageFlags::WRITABLE;
+        let entry = PageTableEntry::new(addr, flags);
+
+        assert!(entry.is_present());
+        assert!(!entry.is_huge());
+        assert_eq!(entry.addr().as_u64(), 0x1000);
+    }
+
+    #[test]
+    fn test_entry_huge_page() {
+        let addr = PhysAddr::new(0x200000); // 2MB aligned
+        let flags = PageFlags::PRESENT | PageFlags::WRITABLE;
+        let entry = PageTableEntry::huge_page(addr, flags);
+
+        assert!(entry.is_present());
+        assert!(entry.is_huge());
+    }
+
+    #[test]
+    fn test_entry_flags() {
+        let addr = PhysAddr::new(0x1000);
+        let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER;
+        let entry = PageTableEntry::new(addr, flags);
+
+        let retrieved = entry.flags();
+        assert!(retrieved.contains(PageFlags::PRESENT));
+        assert!(retrieved.contains(PageFlags::WRITABLE));
+        assert!(retrieved.contains(PageFlags::USER));
+    }
+
+    // =========================================================================
+    // PageTableWalker Tests
+    // =========================================================================
+
+    #[test]
+    fn test_walker_indices() {
+        // Test that indices are correctly extracted from virtual address
+        let virt = VirtAddr::new(0x0000_0000_0020_1000);
+        let indices = PageTableWalker::indices(virt);
+
+        // PML4 index: bits 39-47
+        assert_eq!(indices[0], 0);
+        // PDPT index: bits 30-38
+        assert_eq!(indices[1], 0);
+        // PD index: bits 21-29
+        assert_eq!(indices[2], 1); // 0x200000 >> 21 = 1
+        // PT index: bits 12-20
+        assert_eq!(indices[3], 1); // 0x1000 >> 12 = 1
+    }
+
+    #[test]
+    fn test_walker_indices_high_address() {
+        let virt = VirtAddr::new(0xFFFF_8000_0000_0000);
+        let indices = PageTableWalker::indices(virt);
+
+        // High canonical address
+        assert_eq!(indices[0], 256); // bit 47 set
+    }
+
+    // =========================================================================
+    // MapError Tests
+    // =========================================================================
+
+    #[test]
+    fn test_map_error_variants() {
+        let errors = [
+            MapError::AlreadyMapped,
+            MapError::NotMapped,
+            MapError::OutOfMemory,
+            MapError::MisalignedAddress,
+            MapError::HugePageConflict,
+        ];
+
+        // All variants should be distinct
+        for (i, a) in errors.iter().enumerate() {
+            for (j, b) in errors.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // TLB Shootdown Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tlb_shootdown_vector() {
+        assert_eq!(TLB_SHOOTDOWN_VECTOR, 0xFD);
+    }
+
+    #[test]
+    fn test_shootdown_request_atomics() {
+        // Test that we can manipulate the atomic fields
+        let request = TlbShootdownRequest {
+            address: AtomicU64::new(0),
+            page_count: AtomicU32::new(0),
+            ack_count: AtomicU32::new(0),
+            target_count: AtomicU32::new(0),
+        };
+
+        request.address.store(0x1000, Ordering::SeqCst);
+        assert_eq!(request.address.load(Ordering::SeqCst), 0x1000);
+
+        request.page_count.store(5, Ordering::SeqCst);
+        assert_eq!(request.page_count.load(Ordering::SeqCst), 5);
+
+        request.ack_count.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(request.ack_count.load(Ordering::SeqCst), 1);
+    }
+
+    // =========================================================================
+    // Address Conversion Tests
+    // =========================================================================
+
+    #[test]
+    fn test_phys_to_virt() {
+        let phys = PhysAddr::new(0x1000);
+        let virt = phys_to_virt(phys);
+        assert_eq!(virt.as_u64(), 0x1000 + PHYS_MAP_BASE);
+    }
+
+    #[test]
+    fn test_virt_to_phys() {
+        let virt = VirtAddr::new(PHYS_MAP_BASE + 0x2000);
+        let phys = virt_to_phys(virt);
+        assert_eq!(phys.as_u64(), 0x2000);
+    }
+
+    #[test]
+    fn test_phys_virt_roundtrip() {
+        let original = PhysAddr::new(0x12345000);
+        let virt = phys_to_virt(original);
+        let back = virt_to_phys(virt);
+        assert_eq!(original.as_u64(), back.as_u64());
+    }
+
+    // =========================================================================
+    // Constants Tests
+    // =========================================================================
+
+    #[test]
+    fn test_kernel_base() {
+        assert_eq!(KERNEL_BASE, 0xFFFF_8000_0000_0000);
+    }
+
+    #[test]
+    fn test_phys_map_base() {
+        assert_eq!(PHYS_MAP_BASE, 0xFFFF_8800_0000_0000);
+    }
+
+    #[test]
+    fn test_page_size() {
+        assert_eq!(PAGE_SIZE, 4096);
+    }
+
+    // =========================================================================
+    // PageTable Tests
+    // =========================================================================
+
+    #[test]
+    fn test_page_table_new() {
+        let table = PageTable::new();
+        for entry in table.iter() {
+            assert!(!entry.is_present());
+        }
+    }
+
+    #[test]
+    fn test_page_table_entry_access() {
+        let mut table = PageTable::new();
+
+        let addr = PhysAddr::new(0x2000);
+        let entry = PageTableEntry::new(addr, PageFlags::PRESENT);
+        *table.entry_mut(42) = entry;
+
+        assert!(table.entry(42).is_present());
+        assert_eq!(table.entry(42).addr().as_u64(), 0x2000);
+    }
+
+    #[test]
+    fn test_page_table_zero() {
+        let mut table = PageTable::new();
+
+        // Set some entries
+        *table.entry_mut(0) = PageTableEntry::new(PhysAddr::new(0x1000), PageFlags::PRESENT);
+        *table.entry_mut(100) = PageTableEntry::new(PhysAddr::new(0x2000), PageFlags::PRESENT);
+
+        // Zero the table
+        table.zero();
+
+        // All entries should be empty now
+        for entry in table.iter() {
+            assert!(!entry.is_present());
+        }
+    }
+}
+

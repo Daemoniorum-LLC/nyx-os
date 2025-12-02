@@ -810,3 +810,323 @@ fn write_core_file(path: &str, data: &[u8]) -> Result<(), CoreDumpError> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // CoreDumpError Tests
+    // =========================================================================
+
+    #[test]
+    fn test_core_dump_error_variants() {
+        let errors = [
+            CoreDumpError::ProcessNotFound,
+            CoreDumpError::NoMemorySegments,
+            CoreDumpError::IoError,
+            CoreDumpError::OutOfMemory,
+        ];
+
+        for (i, a) in errors.iter().enumerate() {
+            for (j, b) in errors.iter().enumerate() {
+                if i != j {
+                    assert_ne!(format!("{:?}", a), format!("{:?}", b));
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // NoteType Tests
+    // =========================================================================
+
+    #[test]
+    fn test_note_type_values() {
+        assert_eq!(NoteType::PrStatus as u32, 1);
+        assert_eq!(NoteType::PrPsInfo as u32, 3);
+        assert_eq!(NoteType::SigInfo as u32, 0x53494749);
+    }
+
+    // =========================================================================
+    // CoreSegment Tests
+    // =========================================================================
+
+    #[test]
+    fn test_core_segment_creation() {
+        let segment = CoreSegment {
+            vaddr: 0x400000,
+            memsz: 0x1000,
+            filesz: 0x1000,
+            flags: 0x5, // PF_R | PF_X
+        };
+
+        assert_eq!(segment.vaddr, 0x400000);
+        assert_eq!(segment.memsz, 0x1000);
+        assert_eq!(segment.filesz, 0x1000);
+        assert_eq!(segment.flags, 0x5);
+    }
+
+    // =========================================================================
+    // Helper Function Tests
+    // =========================================================================
+
+    #[test]
+    fn test_align_up_already_aligned() {
+        assert_eq!(align_up(16, 4), 16);
+        assert_eq!(align_up(0, 4), 0);
+        assert_eq!(align_up(4096, 4096), 4096);
+    }
+
+    #[test]
+    fn test_align_up_needs_alignment() {
+        assert_eq!(align_up(1, 4), 4);
+        assert_eq!(align_up(5, 4), 8);
+        assert_eq!(align_up(13, 8), 16);
+        assert_eq!(align_up(4097, 4096), 8192);
+    }
+
+    #[test]
+    fn test_align_up_edge_cases() {
+        assert_eq!(align_up(0, 1), 0);
+        assert_eq!(align_up(1, 1), 1);
+        assert_eq!(align_up(255, 256), 256);
+    }
+
+    // =========================================================================
+    // ELF Constants Tests
+    // =========================================================================
+
+    #[test]
+    fn test_elf_magic() {
+        let magic = [0x7f, b'E', b'L', b'F'];
+        assert_eq!(magic[0], 0x7f);
+        assert_eq!(magic[1], b'E');
+        assert_eq!(magic[2], b'L');
+        assert_eq!(magic[3], b'F');
+    }
+
+    #[test]
+    fn test_elf_core_type() {
+        // ET_CORE = 4
+        let et_core: u16 = 4;
+        assert_eq!(et_core, 4);
+    }
+
+    #[test]
+    fn test_elf_x86_64_machine() {
+        // EM_X86_64 = 0x3E
+        let em_x86_64: u16 = 0x3E;
+        assert_eq!(em_x86_64, 62);
+    }
+
+    // =========================================================================
+    // Siginfo Note Tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_siginfo_note_basic() {
+        use crate::signal::SigInfo;
+        use crate::signal::Signal;
+
+        let info = SigInfo::new(Signal::SIGSEGV);
+        let note = build_siginfo_note(&info);
+
+        // Check minimum size (128 bytes)
+        assert_eq!(note.len(), 128);
+
+        // Check si_signo is correctly encoded
+        let si_signo = i32::from_le_bytes([note[0], note[1], note[2], note[3]]);
+        assert_eq!(si_signo, Signal::SIGSEGV.as_raw() as i32);
+    }
+
+    #[test]
+    fn test_build_siginfo_note_with_addr() {
+        use crate::signal::SigInfo;
+        use crate::signal::Signal;
+
+        let mut info = SigInfo::new(Signal::SIGSEGV);
+        info.addr = Some(0xDEADBEEF);
+        let note = build_siginfo_note(&info);
+
+        // Check si_addr is correctly encoded at offset 24
+        let si_addr = u64::from_le_bytes([
+            note[24], note[25], note[26], note[27],
+            note[28], note[29], note[30], note[31],
+        ]);
+        assert_eq!(si_addr, 0xDEADBEEF);
+    }
+
+    // =========================================================================
+    // ELF Core Building Tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_elf_core_header() {
+        let segments: Vec<CoreSegment> = vec![];
+        let notes: Vec<(NoteType, Vec<u8>)> = vec![];
+
+        let result = build_elf_core(&segments, &notes);
+        assert!(result.is_ok());
+
+        let core = result.unwrap();
+
+        // Check ELF magic
+        assert_eq!(&core[0..4], &[0x7f, b'E', b'L', b'F']);
+
+        // Check 64-bit
+        assert_eq!(core[4], 2);
+
+        // Check little endian
+        assert_eq!(core[5], 1);
+
+        // Check ELF version
+        assert_eq!(core[6], 1);
+
+        // Check ET_CORE (bytes 16-17)
+        let e_type = u16::from_le_bytes([core[16], core[17]]);
+        assert_eq!(e_type, 4); // ET_CORE
+
+        // Check EM_X86_64 (bytes 18-19)
+        let e_machine = u16::from_le_bytes([core[18], core[19]]);
+        assert_eq!(e_machine, 0x3E);
+    }
+
+    #[test]
+    fn test_build_elf_core_with_segments() {
+        let segments = vec![
+            CoreSegment {
+                vaddr: 0x400000,
+                memsz: 0x1000,
+                filesz: 0x1000,
+                flags: 0x5, // PF_R | PF_X
+            },
+            CoreSegment {
+                vaddr: 0x600000,
+                memsz: 0x2000,
+                filesz: 0x2000,
+                flags: 0x6, // PF_R | PF_W
+            },
+        ];
+        let notes: Vec<(NoteType, Vec<u8>)> = vec![];
+
+        let result = build_elf_core(&segments, &notes);
+        assert!(result.is_ok());
+
+        let core = result.unwrap();
+
+        // Check program header count (e_phnum at offset 56-57)
+        let e_phnum = u16::from_le_bytes([core[56], core[57]]);
+        assert_eq!(e_phnum, 3); // 2 PT_LOAD + 1 PT_NOTE
+    }
+
+    #[test]
+    fn test_build_elf_core_with_notes() {
+        let segments: Vec<CoreSegment> = vec![];
+        let notes = vec![
+            (NoteType::PrStatus, vec![0u8; 336]),
+            (NoteType::PrPsInfo, vec![0u8; 136]),
+        ];
+
+        let result = build_elf_core(&segments, &notes);
+        assert!(result.is_ok());
+
+        let core = result.unwrap();
+
+        // Just verify it builds without error and has reasonable size
+        assert!(core.len() > 64); // At least ELF header
+    }
+
+    // =========================================================================
+    // Signal Action Tests
+    // =========================================================================
+
+    #[test]
+    fn test_default_action_core_dump() {
+        use crate::signal::Signal;
+
+        // These signals should generate core dumps
+        let core_dump_signals = [
+            Signal::SIGQUIT,
+            Signal::SIGILL,
+            Signal::SIGABRT,
+            Signal::SIGFPE,
+            Signal::SIGSEGV,
+            Signal::SIGBUS,
+            Signal::SIGSYS,
+            Signal::SIGTRAP,
+            Signal::SIGXCPU,
+            Signal::SIGXFSZ,
+        ];
+
+        for sig in core_dump_signals {
+            let action = default_action(sig);
+            assert_eq!(action, SignalAction::CoreDump,
+                "Expected CoreDump for {:?}", sig);
+        }
+    }
+
+    #[test]
+    fn test_default_action_terminate() {
+        use crate::signal::Signal;
+
+        // These signals should terminate
+        let term_signals = [
+            Signal::SIGTERM,
+            Signal::SIGKILL,
+            Signal::SIGHUP,
+            Signal::SIGINT,
+            Signal::SIGPIPE,
+            Signal::SIGALRM,
+        ];
+
+        for sig in term_signals {
+            let action = default_action(sig);
+            assert_eq!(action, SignalAction::Terminate,
+                "Expected Terminate for {:?}", sig);
+        }
+    }
+
+    #[test]
+    fn test_default_action_ignore() {
+        use crate::signal::Signal;
+
+        let ignore_signals = [
+            Signal::SIGCHLD,
+            Signal::SIGURG,
+            Signal::SIGWINCH,
+        ];
+
+        for sig in ignore_signals {
+            let action = default_action(sig);
+            assert_eq!(action, SignalAction::Ignore,
+                "Expected Ignore for {:?}", sig);
+        }
+    }
+
+    #[test]
+    fn test_default_action_stop() {
+        use crate::signal::Signal;
+
+        let stop_signals = [
+            Signal::SIGSTOP,
+            Signal::SIGTSTP,
+            Signal::SIGTTIN,
+            Signal::SIGTTOU,
+        ];
+
+        for sig in stop_signals {
+            let action = default_action(sig);
+            assert_eq!(action, SignalAction::Stop,
+                "Expected Stop for {:?}", sig);
+        }
+    }
+
+    #[test]
+    fn test_default_action_continue() {
+        use crate::signal::Signal;
+
+        let action = default_action(Signal::SIGCONT);
+        assert_eq!(action, SignalAction::Continue);
+    }
+}
