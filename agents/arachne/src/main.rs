@@ -28,16 +28,16 @@ use tracing::{info, error};
 #[derive(Parser, Debug)]
 #[command(name = "arachne", version, about)]
 struct Args {
-    /// Configuration file
-    #[arg(short, long, default_value = "/grimoire/system/arachne.yaml")]
+    /// Configuration file (also: ARACHNE_CONFIG env var)
+    #[arg(short, long, env = "ARACHNE_CONFIG", default_value = "/grimoire/system/arachne.yaml")]
     config: PathBuf,
 
-    /// Socket path
-    #[arg(short, long, default_value = "/run/arachne/arachne.sock")]
+    /// Socket path (also: ARACHNE_SOCKET env var)
+    #[arg(short, long, env = "ARACHNE_SOCKET", default_value = "/run/arachne/arachne.sock")]
     socket: PathBuf,
 
-    /// Enable debug logging
-    #[arg(short, long)]
+    /// Enable debug logging (also: NYX_DEBUG env var)
+    #[arg(short, long, env = "NYX_DEBUG")]
     debug: bool,
 }
 

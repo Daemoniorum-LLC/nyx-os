@@ -65,16 +65,16 @@ use tracing::{info, error, warn};
 #[derive(Parser, Debug)]
 #[command(name = "nyx-init", version, about)]
 struct Args {
-    /// Configuration directory
-    #[arg(short, long, default_value = "/grimoire/system")]
+    /// Configuration directory (also: NYX_CONFIG_DIR env var)
+    #[arg(short, long, env = "NYX_CONFIG_DIR", default_value = "/grimoire/system")]
     config_dir: PathBuf,
 
     /// Run in user session mode (not PID 1)
     #[arg(long)]
     user_session: bool,
 
-    /// Enable debug logging
-    #[arg(short, long)]
+    /// Enable debug logging (also: NYX_DEBUG env var)
+    #[arg(short, long, env = "NYX_DEBUG")]
     debug: bool,
 
     /// Dry run - validate config without starting services
