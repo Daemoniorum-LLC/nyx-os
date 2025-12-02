@@ -17,7 +17,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 libc = { workspace = true }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 toml = "0.8"
 nix = { version = "0.29", features = ["signal", "process", "fs", "user"] }
 async-trait = "0.1"

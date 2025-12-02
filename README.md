@@ -150,6 +150,43 @@ Quick check for KVM support:
 cd kernel && make wsl-kvm
 ```
 
+### Example Boot Output
+
+```
+  ███╗   ██╗██╗   ██╗██╗  ██╗
+  ████╗  ██║╚██╗ ██╔╝╚██╗██╔╝
+  ██╔██╗ ██║ ╚████╔╝  ╚███╔╝
+  ██║╚██╗██║  ╚██╔╝   ██╔██╗
+  ██║ ╚████║   ██║   ██╔╝ ██╗
+  ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝
+
+  DaemonOS Microkernel
+
+[*] Detected: Linux
+[*] KVM: Available and accessible
+[*] Building kernel...
+[*] Kernel built: 1.2M
+[*] Starting QEMU...
+
+=== Nyx Kernel Output ===
+
+[INFO ] Nyx Kernel v0.1.0 starting...
+[DEBUG] Initializing memory subsystem
+[DEBUG] Initializing capability system
+[DEBUG] Initializing IPC subsystem
+[DEBUG] Initializing filesystem subsystem
+[DEBUG] Initializing process subsystem
+[DEBUG] Initializing scheduler
+[DEBUG] Initializing time-travel subsystem
+[DEBUG] Initializing device driver framework
+[DEBUG] Initializing network stack
+[DEBUG] Initializing signal subsystem
+[INFO ] Loading init process
+[INFO ] Found init at /init
+[INFO ] Init process spawned with PID 1
+[INFO ] Starting scheduler
+```
+
 ## Configuration
 
 Services load configuration from `/grimoire/system/` by default. Override with environment variables or CLI flags:

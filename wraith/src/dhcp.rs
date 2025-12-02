@@ -1,9 +1,34 @@
 //! DHCP client
 
-use anyhow::{Result, anyhow};
 use std::net::Ipv4Addr;
 use std::time::Duration;
+use thiserror::Error;
 use tracing::{info, debug, warn};
+
+/// DHCP-specific errors with actionable context
+#[derive(Error, Debug)]
+pub enum DhcpError {
+    #[error("failed to create DHCP socket: {0}")]
+    SocketCreation(std::io::Error),
+
+    #[error("interface not found: {interface}")]
+    InterfaceNotFound { interface: String },
+
+    #[error("DHCP {phase} timeout after {timeout_secs}s on {interface}")]
+    Timeout {
+        phase: &'static str,
+        timeout_secs: u64,
+        interface: String,
+    },
+
+    #[error("failed to send DHCP packet: {0}")]
+    SendFailed(std::io::Error),
+
+    #[error("invalid interface name: {0}")]
+    InvalidInterfaceName(#[from] std::ffi::NulError),
+}
+
+type Result<T> = std::result::Result<T, DhcpError>;
 
 /// DHCP lease
 #[derive(Debug, Clone)]
@@ -36,7 +61,7 @@ impl DhcpClient {
         };
 
         if socket < 0 {
-            return Err(anyhow!("Failed to create DHCP socket"));
+            return Err(DhcpError::SocketCreation(std::io::Error::last_os_error()));
         }
 
         Ok(Self {
@@ -116,7 +141,8 @@ impl DhcpClient {
     }
 
     async fn receive_offer(&self, expected_xid: u32) -> Result<DhcpLease> {
-        let timeout = Duration::from_secs(10);
+        let timeout_secs = 10;
+        let timeout = Duration::from_secs(timeout_secs);
         let start = std::time::Instant::now();
 
         while start.elapsed() < timeout {
@@ -126,7 +152,11 @@ impl DhcpClient {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        Err(anyhow!("DHCP offer timeout"))
+        Err(DhcpError::Timeout {
+            phase: "offer",
+            timeout_secs,
+            interface: self.interface.clone(),
+        })
     }
 
     fn send_request(&self, xid: u32, offer: &DhcpLease) -> Result<()> {
@@ -175,7 +205,8 @@ impl DhcpClient {
     }
 
     async fn receive_ack(&self, expected_xid: u32) -> Result<DhcpLease> {
-        let timeout = Duration::from_secs(10);
+        let timeout_secs = 10;
+        let timeout = Duration::from_secs(timeout_secs);
         let start = std::time::Instant::now();
 
         while start.elapsed() < timeout {
@@ -185,7 +216,11 @@ impl DhcpClient {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        Err(anyhow!("DHCP ACK timeout"))
+        Err(DhcpError::Timeout {
+            phase: "ACK",
+            timeout_secs,
+            interface: self.interface.clone(),
+        })
     }
 
     fn try_receive(&self, expected_xid: u32, expected_type: u8) -> Result<Option<DhcpLease>> {
@@ -314,7 +349,7 @@ impl DhcpClient {
         };
 
         if result < 0 {
-            return Err(anyhow!("Failed to send DHCP packet"));
+            return Err(DhcpError::SendFailed(std::io::Error::last_os_error()));
         }
 
         Ok(())
@@ -324,7 +359,9 @@ impl DhcpClient {
         let name = std::ffi::CString::new(self.interface.as_str())?;
         let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
         if index == 0 {
-            return Err(anyhow!("Interface not found: {}", self.interface));
+            return Err(DhcpError::InterfaceNotFound {
+                interface: self.interface.clone(),
+            });
         }
         Ok(index as i32)
     }

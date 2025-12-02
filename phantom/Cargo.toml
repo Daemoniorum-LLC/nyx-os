@@ -18,7 +18,7 @@ tracing-subscriber = { workspace = true }
 libc = { workspace = true }
 glob = { workspace = true }
 regex = { workspace = true }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 nix = { version = "0.29", features = ["fs", "ioctl"] }
 inotify = "0.10"
 
