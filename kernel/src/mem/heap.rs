@@ -170,7 +170,9 @@ fn size_to_class(size: usize) -> usize {
         0
     } else {
         let rounded = size.next_power_of_two();
-        (rounded.trailing_zeros() as usize).saturating_sub(3).min(SLAB_CLASSES - 1)
+        (rounded.trailing_zeros() as usize)
+            .saturating_sub(3)
+            .min(SLAB_CLASSES - 1)
     }
 }
 

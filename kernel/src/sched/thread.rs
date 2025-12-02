@@ -88,30 +88,30 @@ pub struct Thread {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RegisterState {
     // Callee-saved registers (in order for context switch)
-    pub r15: u64,       // 0x00
-    pub r14: u64,       // 0x08
-    pub r13: u64,       // 0x10
-    pub r12: u64,       // 0x18
-    pub r11: u64,       // 0x20
-    pub r10: u64,       // 0x28
-    pub r9: u64,        // 0x30
-    pub r8: u64,        // 0x38
-    pub rbp: u64,       // 0x40
-    pub rdi: u64,       // 0x48
-    pub rsi: u64,       // 0x50
-    pub rdx: u64,       // 0x58
-    pub rcx: u64,       // 0x60
-    pub rbx: u64,       // 0x68
-    pub rax: u64,       // 0x70
-    pub rsp: u64,       // 0x78
+    pub r15: u64, // 0x00
+    pub r14: u64, // 0x08
+    pub r13: u64, // 0x10
+    pub r12: u64, // 0x18
+    pub r11: u64, // 0x20
+    pub r10: u64, // 0x28
+    pub r9: u64,  // 0x30
+    pub r8: u64,  // 0x38
+    pub rbp: u64, // 0x40
+    pub rdi: u64, // 0x48
+    pub rsi: u64, // 0x50
+    pub rdx: u64, // 0x58
+    pub rcx: u64, // 0x60
+    pub rbx: u64, // 0x68
+    pub rax: u64, // 0x70
+    pub rsp: u64, // 0x78
 
     // Instruction pointer and flags
-    pub rip: u64,       // 0x80
-    pub rflags: u64,    // 0x88
+    pub rip: u64,    // 0x80
+    pub rflags: u64, // 0x88
 
     // Segment registers
-    pub cs: u64,        // 0x90
-    pub ss: u64,        // 0x98
+    pub cs: u64, // 0x90
+    pub ss: u64, // 0x98
 }
 
 impl Thread {
@@ -139,8 +139,8 @@ impl Thread {
         regs.rip = entry;
         regs.rsp = stack;
         regs.rflags = 0x202; // IF flag set
-        regs.cs = 0x23;      // User code segment (ring 3)
-        regs.ss = 0x1b;      // User data segment (ring 3)
+        regs.cs = 0x23; // User code segment (ring 3)
+        regs.ss = 0x1b; // User data segment (ring 3)
 
         Self {
             id: ThreadId::new(),
@@ -164,8 +164,8 @@ impl Thread {
         regs.rip = entry;
         regs.rsp = stack;
         regs.rflags = 0x202; // IF flag set
-        regs.cs = 0x08;      // Kernel code segment (ring 0)
-        regs.ss = 0x10;      // Kernel data segment (ring 0)
+        regs.cs = 0x08; // Kernel code segment (ring 0)
+        regs.ss = 0x10; // Kernel data segment (ring 0)
 
         Self {
             id: ThreadId::new(),

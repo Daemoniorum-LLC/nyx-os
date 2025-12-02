@@ -1,6 +1,6 @@
 //! Capability Space (CSpace) implementation
 
-use super::{Capability, CapError};
+use super::{CapError, Capability};
 use alloc::boxed::Box;
 
 /// Default CSpace quota
@@ -183,12 +183,7 @@ mod tests {
     use crate::cap::{ObjectId, Rights};
 
     fn make_test_cap(id: u64) -> Capability {
-        unsafe {
-            Capability::new_unchecked(
-                ObjectId::from_raw(id),
-                Rights::READ | Rights::WRITE,
-            )
-        }
+        unsafe { Capability::new_unchecked(ObjectId::from_raw(id), Rights::READ | Rights::WRITE) }
     }
 
     #[test]

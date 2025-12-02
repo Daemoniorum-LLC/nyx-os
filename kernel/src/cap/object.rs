@@ -51,7 +51,12 @@ impl ObjectId {
 
 impl core::fmt::Debug for ObjectId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "ObjectId({:?}:{})", self.object_type(), self.0 & 0x00FFFFFFFFFFFFFF)
+        write!(
+            f,
+            "ObjectId({:?}:{})",
+            self.object_type(),
+            self.0 & 0x00FFFFFFFFFFFFFF
+        )
     }
 }
 
@@ -63,7 +68,6 @@ pub enum ObjectType {
     Unknown = 0,
 
     // === Core Kernel Objects (1-31) ===
-
     /// IPC endpoint for message passing
     Endpoint = 1,
     /// Async notification (like eventfd)
@@ -82,7 +86,6 @@ pub enum ObjectType {
     IpcRing = 8,
 
     // === Hardware Objects (32-63) ===
-
     /// IRQ handler
     Interrupt = 32,
     /// x86 I/O port range
@@ -99,7 +102,6 @@ pub enum ObjectType {
     BlockDevice = 38,
 
     // === AI/Tensor Objects (64-95) ===
-
     /// GPU/NPU tensor memory
     TensorBuffer = 64,
     /// Model execution context
@@ -112,7 +114,6 @@ pub enum ObjectType {
     TensorView = 68,
 
     // === File System Objects (96-127) ===
-
     /// Open file handle
     File = 96,
     /// Directory handle
@@ -123,14 +124,12 @@ pub enum ObjectType {
     PersistentRegion = 99,
 
     // === Time-Travel Objects (128-159) ===
-
     /// Execution checkpoint
     Checkpoint = 128,
     /// Recording session
     RecordingSession = 129,
 
     // === Network Objects (160-191) ===
-
     /// Network socket
     Socket = 160,
     /// Network interface
@@ -183,7 +182,9 @@ impl ObjectType {
             Self::Endpoint => Rights::IPC_FULL,
             Self::Thread | Self::Process => Rights::PROCESS_FULL,
             Self::TensorBuffer | Self::InferenceContext => Rights::AI_FULL,
-            Self::Interrupt | Self::MmioRegion => Rights::IRQ | Rights::MMIO | Rights::READ | Rights::WRITE,
+            Self::Interrupt | Self::MmioRegion => {
+                Rights::IRQ | Rights::MMIO | Rights::READ | Rights::WRITE
+            }
             _ => Rights::READ | Rights::WRITE | Rights::GRANT,
         }
     }
@@ -410,7 +411,12 @@ mod tests {
 
         for obj_type in types {
             let id = ObjectId::new(obj_type);
-            assert_eq!(id.object_type(), obj_type, "Type mismatch for {:?}", obj_type);
+            assert_eq!(
+                id.object_type(),
+                obj_type,
+                "Type mismatch for {:?}",
+                obj_type
+            );
         }
     }
 

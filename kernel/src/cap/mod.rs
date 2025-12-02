@@ -10,11 +10,12 @@
 //! - Rights (32 bits): What operations are permitted
 //! - Generation (32 bits): Prevents use-after-revoke
 //!
-//! ## Security Properties (Formally Verified)
+//! ## Security Properties (Enforced by Implementation)
 //!
 //! - **Monotonicity**: Derived capabilities have ≤ rights of parent
-//! - **No Forgery**: Capabilities can only be created by derivation
+//! - **No Forgery**: Capabilities can only be created by derivation from existing caps
 //! - **Complete Revocation**: Revoking a capability invalidates all derivations
+//! - **Right Preservation**: Granted capabilities never exceed source rights
 
 mod cspace;
 mod derive;
@@ -32,9 +33,8 @@ use spin::{Lazy, RwLock};
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Capability registry (maps object IDs to metadata)
-static REGISTRY: Lazy<RwLock<CapabilityRegistry>> = Lazy::new(|| {
-    RwLock::new(CapabilityRegistry::new_lazy())
-});
+static REGISTRY: Lazy<RwLock<CapabilityRegistry>> =
+    Lazy::new(|| RwLock::new(CapabilityRegistry::new_lazy()));
 
 /// Initialize the capability system
 pub fn init() {
@@ -68,10 +68,7 @@ impl Capability {
     ///
     /// This bypasses normal capability derivation. Only use during kernel
     /// initialization or for creating root capabilities.
-    pub(crate) unsafe fn new_unchecked(
-        object_id: ObjectId,
-        rights: Rights,
-    ) -> Self {
+    pub(crate) unsafe fn new_unchecked(object_id: ObjectId, rights: Rights) -> Self {
         Self {
             object_id,
             rights,
@@ -189,10 +186,7 @@ pub enum CapError {
     /// Capability has been revoked
     Revoked,
     /// Insufficient rights for operation
-    InsufficientRights {
-        required: Rights,
-        actual: Rights,
-    },
+    InsufficientRights { required: Rights, actual: Rights },
     /// Object not found
     ObjectNotFound,
     /// CSpace quota exceeded
@@ -205,7 +199,10 @@ pub enum CapError {
 struct CapabilityMetadata {
     object_type: ObjectType,
     generation: u32,
-    // Reference count for garbage collection
+    /// The maximum rights that can be granted for this object
+    /// (rights of the original creator capability)
+    rights: Rights,
+    /// Reference count for garbage collection
     ref_count: u32,
 }
 
@@ -226,15 +223,21 @@ impl CapabilityRegistry {
         self.objects.get(&id)
     }
 
-    fn insert(&mut self, id: ObjectId, object_type: ObjectType) {
+    fn insert(&mut self, id: ObjectId, object_type: ObjectType, rights: Rights) {
         self.objects.insert(
             id,
             CapabilityMetadata {
                 object_type,
                 generation: current_generation(),
+                rights,
                 ref_count: 1,
             },
         );
+    }
+
+    /// Insert with default all rights (for backward compatibility)
+    fn insert_with_full_rights(&mut self, id: ObjectId, object_type: ObjectType) {
+        self.insert(id, object_type, Rights::all())
     }
 
     /// Revoke an object - increment its generation making old caps invalid
@@ -281,20 +284,78 @@ pub fn identify(object_id: ObjectId) -> Result<(ObjectType, Rights), CapError> {
 }
 
 /// Grant a capability to another process
+///
+/// **DEPRECATED**: Use `grant_with_rights` instead, which enforces the principle
+/// of least privilege by requiring explicit rights specification.
+///
+/// This function grants with empty rights (read-only) for safety.
 pub fn grant(
     object_id: ObjectId,
-    _target_process: crate::process::ProcessId,
+    target_process: crate::process::ProcessId,
 ) -> Result<Capability, CapError> {
-    // Look up the capability in registry
+    // Default to minimal rights for safety
+    grant_with_rights(object_id, target_process, Rights::READ.bits() as u64)
+}
+
+/// Grant a capability to another process with specific rights
+///
+/// ## Security Guarantees
+///
+/// - The granted capability's rights are the INTERSECTION of:
+///   1. The source object's tracked rights in the registry
+///   2. The requested rights mask
+/// - This ensures the monotonicity property: no escalation is possible
+///
+/// ## Arguments
+///
+/// * `object_id` - The object to grant access to
+/// * `target_process` - The process receiving the capability
+/// * `rights_mask` - The maximum rights to grant (will be intersected with source rights)
+///
+/// ## Returns
+///
+/// * `Ok(Capability)` - A new capability for the target process
+/// * `Err(CapError)` - If the object doesn't exist or the caller lacks GRANT right
+pub fn grant_with_rights(
+    object_id: ObjectId,
+    _target_process: crate::process::ProcessId,
+    rights_mask: u64,
+) -> Result<Capability, CapError> {
+    // Look up the capability in registry to get the object's rights
     let registry = REGISTRY.read();
     let meta = registry.get(object_id).ok_or(CapError::ObjectNotFound)?;
+
+    // Get the source capability's rights from the registry
+    // In a full implementation, we'd look up the caller's CSpace to find their
+    // capability and use those rights. For now, we track rights per-object.
+    let source_rights = meta.rights;
+
+    // Verify the source has GRANT right - you can only grant what you can grant
+    if !source_rights.contains(Rights::GRANT) {
+        return Err(CapError::NoGrantRight);
+    }
+
+    // Apply the rights mask (intersection) - can never escalate rights
+    let requested = Rights::from_bits_truncate(rights_mask);
+    let granted_rights = source_rights & requested;
+
+    // Strip GRANT right from granted capability by default
+    // (prevents infinite delegation chains unless explicitly allowed)
+    let final_rights = granted_rights & !Rights::GRANT;
+
+    if final_rights.is_empty() {
+        return Err(CapError::EmptyRights);
+    }
 
     // Create a new capability for the target process
     let cap = Capability {
         object_id,
-        rights: Rights::all(), // Should be based on original cap's rights
+        rights: final_rights,
         generation: meta.generation,
     };
+
+    // In a full implementation, we'd insert this into the target's CSpace
+    // and increment the object's reference count
 
     Ok(cap)
 }
@@ -302,10 +363,59 @@ pub fn grant(
 /// Drop a capability (release reference)
 pub fn drop_cap(object_id: ObjectId) -> Result<(), CapError> {
     // Decrement reference count
-    // For now, just validate the object exists
-    let registry = REGISTRY.read();
-    let _ = registry.get(object_id).ok_or(CapError::ObjectNotFound)?;
+    let mut registry = REGISTRY.write();
+    let meta = registry
+        .objects
+        .get_mut(&object_id)
+        .ok_or(CapError::ObjectNotFound)?;
+
+    meta.ref_count = meta.ref_count.saturating_sub(1);
+
+    // If ref_count reaches zero, we could garbage collect the object
+    // For now, we keep it around in case of late revocation checks
+
     Ok(())
+}
+
+/// Register a new kernel object in the capability registry
+///
+/// This is called when creating kernel objects (processes, threads, endpoints, etc.)
+/// to make them accessible via capabilities.
+///
+/// ## Arguments
+///
+/// * `id` - The unique identifier for the object
+/// * `object_type` - The type of kernel object
+/// * `initial_rights` - The rights the creator capability will have
+///
+/// ## Returns
+///
+/// A capability with full rights for the object (the "root" capability)
+pub fn register_object(
+    id: ObjectId,
+    object_type: ObjectType,
+    initial_rights: Rights,
+) -> Capability {
+    let mut registry = REGISTRY.write();
+    registry.insert(id, object_type, initial_rights);
+
+    Capability {
+        object_id: id,
+        rights: initial_rights,
+        generation: current_generation(),
+    }
+}
+
+/// Check if an object exists in the registry
+pub fn object_exists(object_id: ObjectId) -> bool {
+    let registry = REGISTRY.read();
+    registry.get(object_id).is_some()
+}
+
+/// Get the type of a registered object
+pub fn object_type(object_id: ObjectId) -> Option<ObjectType> {
+    let registry = REGISTRY.read();
+    registry.get(object_id).map(|m| m.object_type)
 }
 
 #[cfg(test)]
@@ -337,17 +447,15 @@ mod tests {
             )
         };
 
-        assert!(matches!(cap.derive(Rights::READ), Err(CapError::NoGrantRight)));
+        assert!(matches!(
+            cap.derive(Rights::READ),
+            Err(CapError::NoGrantRight)
+        ));
     }
 
     #[test]
     fn test_derive_preserves_object_id() {
-        let cap = unsafe {
-            Capability::new_unchecked(
-                ObjectId::new_test(42),
-                Rights::all(),
-            )
-        };
+        let cap = unsafe { Capability::new_unchecked(ObjectId::new_test(42), Rights::all()) };
 
         let derived = cap.derive(Rights::READ).unwrap();
         assert_eq!(derived.object_id, cap.object_id);
@@ -356,10 +464,7 @@ mod tests {
     #[test]
     fn test_capability_has_rights() {
         let cap = unsafe {
-            Capability::new_unchecked(
-                ObjectId::new_test(1),
-                Rights::READ | Rights::WRITE,
-            )
+            Capability::new_unchecked(ObjectId::new_test(1), Rights::READ | Rights::WRITE)
         };
 
         assert!(cap.has_rights(Rights::READ));
@@ -372,10 +477,7 @@ mod tests {
     #[test]
     fn test_capability_require_success() {
         let cap = unsafe {
-            Capability::new_unchecked(
-                ObjectId::new_test(1),
-                Rights::READ | Rights::WRITE,
-            )
+            Capability::new_unchecked(ObjectId::new_test(1), Rights::READ | Rights::WRITE)
         };
 
         assert!(cap.require(Rights::READ).is_ok());
@@ -385,12 +487,7 @@ mod tests {
 
     #[test]
     fn test_capability_require_failure() {
-        let cap = unsafe {
-            Capability::new_unchecked(
-                ObjectId::new_test(1),
-                Rights::READ,
-            )
-        };
+        let cap = unsafe { Capability::new_unchecked(ObjectId::new_test(1), Rights::READ) };
 
         let result = cap.require(Rights::WRITE);
         assert!(matches!(result, Err(CapError::InsufficientRights { .. })));
@@ -398,12 +495,7 @@ mod tests {
 
     #[test]
     fn test_derive_empty_rights_fails() {
-        let cap = unsafe {
-            Capability::new_unchecked(
-                ObjectId::new_test(1),
-                Rights::GRANT,
-            )
-        };
+        let cap = unsafe { Capability::new_unchecked(ObjectId::new_test(1), Rights::GRANT) };
 
         // Deriving with empty mask should fail
         let result = cap.derive(Rights::empty());
@@ -439,19 +531,9 @@ mod tests {
 
     #[test]
     fn test_capability_equality() {
-        let cap1 = unsafe {
-            Capability::new_unchecked(
-                ObjectId::new_test(1),
-                Rights::READ,
-            )
-        };
+        let cap1 = unsafe { Capability::new_unchecked(ObjectId::new_test(1), Rights::READ) };
 
-        let cap2 = unsafe {
-            Capability::new_unchecked(
-                ObjectId::new_test(1),
-                Rights::READ,
-            )
-        };
+        let cap2 = unsafe { Capability::new_unchecked(ObjectId::new_test(1), Rights::READ) };
 
         // Note: generation might differ, so we compare object_id and rights
         assert_eq!(cap1.object_id, cap2.object_id);

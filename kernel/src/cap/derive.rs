@@ -2,7 +2,7 @@
 //!
 //! This module contains the formally verified derivation logic.
 
-use super::{Capability, CapError, Rights};
+use super::{CapError, Capability, Rights};
 
 /// Verify that a derivation is valid
 ///

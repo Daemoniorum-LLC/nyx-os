@@ -361,8 +361,8 @@ impl FragmentationStats {
 
         if ideal_blocks == 0 {
             // Less than one max block, check distribution
-            let small_block_ratio =
-                self.bytes_per_order[0..3].iter().sum::<u64>() as f64 / self.total_free_bytes as f64;
+            let small_block_ratio = self.bytes_per_order[0..3].iter().sum::<u64>() as f64
+                / self.total_free_bytes as f64;
             return (small_block_ratio * 100.0) as u8;
         }
 

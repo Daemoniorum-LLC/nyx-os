@@ -8,17 +8,18 @@
 //! - Energy-aware scheduling (big.LITTLE / P-core/E-core)
 //! - Priority inheritance for mutex holders
 
-mod thread;
 mod cfs;
 mod deadline;
 mod energy;
+mod thread;
 
-pub use thread::{Thread, ThreadId, ThreadState, BlockReason, RegisterState};
+pub use thread::{BlockReason, RegisterState, Thread, ThreadId, ThreadState};
 
 use crate::arch::BootInfo;
 use crate::cap::Capability;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BinaryHeap};
 use core::arch::asm;
+use core::cmp::Ordering as CmpOrdering;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::RwLock;
 
@@ -212,8 +213,7 @@ pub fn yield_now() {
 /// Sleep current thread for duration
 pub fn sleep(duration: core::time::Duration) {
     let current_id = ThreadId(CURRENT_THREAD.load(Ordering::SeqCst));
-    let wake_tick = TICK_COUNT.load(Ordering::SeqCst) +
-        (duration.as_millis() as u64 / 10); // Assuming 100Hz timer
+    let wake_tick = TICK_COUNT.load(Ordering::SeqCst) + (duration.as_millis() as u64 / 10); // Assuming 100Hz timer
 
     // Mark thread as sleeping
     {
@@ -370,6 +370,32 @@ fn idle() {
     }
 }
 
+/// Timer queue entry for sleeping threads
+///
+/// Implements Ord to work with BinaryHeap - note that BinaryHeap is a max-heap,
+/// so we reverse the comparison to get min-heap behavior (earliest wake time first).
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct TimerEntry {
+    thread_id: ThreadId,
+    wake_tick: u64,
+}
+
+impl Ord for TimerEntry {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        // Reverse comparison for min-heap behavior (earliest first)
+        other
+            .wake_tick
+            .cmp(&self.wake_tick)
+            .then_with(|| other.thread_id.0.cmp(&self.thread_id.0))
+    }
+}
+
+impl PartialOrd for TimerEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Per-CPU scheduler state
 pub struct CpuScheduler {
     cpu_id: u32,
@@ -381,8 +407,8 @@ pub struct CpuScheduler {
     deadline_queue: deadline::DeadlineQueue,
     /// Idle thread ID
     idle_thread: Option<ThreadId>,
-    /// Timer queue for sleeping threads
-    timer_queue: alloc::vec::Vec<(ThreadId, u64)>, // (thread_id, wake_tick)
+    /// Timer queue for sleeping threads (min-heap by wake_tick)
+    timer_queue: BinaryHeap<TimerEntry>,
 }
 
 impl CpuScheduler {
@@ -393,7 +419,7 @@ impl CpuScheduler {
             cfs_queue: cfs::CfsQueue::new(),
             deadline_queue: deadline::DeadlineQueue::new(),
             idle_thread: None,
-            timer_queue: alloc::vec::Vec::new(),
+            timer_queue: BinaryHeap::new(),
         }
     }
 
@@ -439,20 +465,31 @@ impl CpuScheduler {
         self.idle_thread
     }
 
+    /// Add a thread to the timer queue
+    ///
+    /// Complexity: O(log n) - much better than O(n log n) with Vec + sort
     fn add_to_timer_queue(&mut self, thread_id: ThreadId, wake_tick: u64) {
-        self.timer_queue.push((thread_id, wake_tick));
-        // Sort by wake time
-        self.timer_queue.sort_by_key(|(_, tick)| *tick);
+        self.timer_queue.push(TimerEntry {
+            thread_id,
+            wake_tick,
+        });
     }
 
+    /// Check timer queue and return threads that should be woken
+    ///
+    /// Complexity: O(k log n) where k is the number of expired timers
+    /// This is much better than O(n) with Vec::remove(0)
     fn check_timer_queue(&mut self, current_tick: u64) -> alloc::vec::Vec<ThreadId> {
         let mut woken = alloc::vec::Vec::new();
 
-        while let Some(&(thread_id, wake_tick)) = self.timer_queue.first() {
-            if wake_tick <= current_tick {
-                woken.push(thread_id);
-                self.timer_queue.remove(0);
+        // Pop all expired timers (BinaryHeap with reversed Ord gives us min-heap)
+        while let Some(entry) = self.timer_queue.peek() {
+            if entry.wake_tick <= current_tick {
+                // Timer expired, remove and add to woken list
+                let entry = self.timer_queue.pop().unwrap();
+                woken.push(entry.thread_id);
             } else {
+                // No more expired timers (they're in sorted order)
                 break;
             }
         }
@@ -529,12 +566,14 @@ pub fn load_balance() {
         .collect();
 
     // Find busiest and idlest CPUs
-    let (busiest_cpu, busiest_load) = loads.iter()
+    let (busiest_cpu, busiest_load) = loads
+        .iter()
         .max_by_key(|(_, load)| *load)
         .map(|(cpu, load)| (*cpu, *load))
         .unwrap_or((0, 0));
 
-    let (idlest_cpu, idlest_load) = loads.iter()
+    let (idlest_cpu, idlest_load) = loads
+        .iter()
         .min_by_key(|(_, load)| *load)
         .map(|(cpu, load)| (*cpu, *load))
         .unwrap_or((0, 0));
@@ -559,10 +598,7 @@ pub fn load_balance() {
 
                 // Send IPI to wake idle CPU if needed
                 if idlest_load == 0 {
-                    crate::arch::x86_64::smp::send_ipi_to(
-                        idlest_cpu as u32,
-                        RESCHEDULE_IPI_VECTOR,
-                    );
+                    crate::arch::x86_64::smp::send_ipi_to(idlest_cpu as u32, RESCHEDULE_IPI_VECTOR);
                 }
             }
         }
