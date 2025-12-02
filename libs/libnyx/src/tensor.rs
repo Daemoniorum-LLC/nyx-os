@@ -299,7 +299,7 @@ pub mod flags {
 
 /// Allocate a tensor buffer (legacy API)
 #[deprecated(note = "Use TensorBuffer::alloc_for instead")]
-pub fn alloc(shape: &TensorShape, dtype: DType, device: u32) -> Result<Capability, Error> {
+pub fn alloc(shape: &TensorShape, dtype: DType, _device: u32) -> Result<Capability, Error> {
     let buffer = TensorBuffer::alloc_for(shape, dtype, Device::Cpu)?;
     Ok(Capability::from_raw(buffer.id()))
 }

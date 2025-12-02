@@ -5,6 +5,43 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Nyx kernel userspace library"
+build = "build.rs"
 
 [dependencies]
 bitflags.workspace = true
+
+[build-dependencies]
+# No dependencies needed for the build script
+
+# Disable auto-discovery of examples since they are no_std and meant for
+# cross-compilation to the Nyx kernel, not for running on host
+[[example]]
+name = "hello"
+crate-type = ["bin"]
+# These examples require cross-compilation, not host builds
+# Build with: cargo build --example hello --target x86_64-nyx-none
+
+[[example]]
+name = "ipc_echo"
+crate-type = ["bin"]
+
+[[example]]
+name = "tensor_inference"
+crate-type = ["bin"]
+
+# Integration tests run on the host to validate API structure
+[[test]]
+name = "syscall_numbers"
+path = "tests/syscall_numbers.rs"
+
+[[test]]
+name = "api_structure"
+path = "tests/api_structure.rs"
+
+[[test]]
+name = "error_codes"
+path = "tests/error_codes.rs"
+
+[[test]]
+name = "capability_rights"
+path = "tests/capability_rights.rs"
