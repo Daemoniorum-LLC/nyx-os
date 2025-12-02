@@ -257,3 +257,244 @@ fn bench_error_from_raw_error(b: &mut Bencher) {
         black_box(Error::from_raw(-4))
     });
 }
+
+// ============================================================================
+// Optimized Message Benchmarks (MaybeUninit)
+// ============================================================================
+
+impl Message {
+    /// Fast path constructor using MaybeUninit
+    #[inline]
+    unsafe fn new_uninit() -> Self {
+        use std::mem::MaybeUninit;
+        let mut msg = MaybeUninit::<Self>::uninit();
+        let ptr = msg.as_mut_ptr();
+        (*ptr).tag = 0;
+        (*ptr).length = 0;
+        msg.assume_init()
+    }
+
+    /// Fast path with data
+    #[inline]
+    fn with_data_fast(tag: u32, data: &[u8]) -> Self {
+        let len = data.len().min(MAX_MESSAGE_SIZE);
+        // SAFETY: We immediately initialize all used fields
+        let mut msg = unsafe { Self::new_uninit() };
+        msg.tag = tag;
+        msg.length = len as u32;
+        msg.data[..len].copy_from_slice(&data[..len]);
+        msg
+    }
+}
+
+#[bench]
+fn bench_message_new_uninit(b: &mut Bencher) {
+    b.iter(|| {
+        // SAFETY: We don't read uninit data
+        unsafe { black_box(Message::new_uninit()) }
+    });
+}
+
+#[bench]
+fn bench_message_with_small_data_fast(b: &mut Bencher) {
+    let data = b"Hello, Nyx!";
+    b.iter(|| {
+        black_box(Message::with_data_fast(1, data))
+    });
+}
+
+#[bench]
+fn bench_message_with_1kb_data_fast(b: &mut Bencher) {
+    let data = vec![0xABu8; 1024];
+    b.iter(|| {
+        black_box(Message::with_data_fast(1, &data))
+    });
+}
+
+#[bench]
+fn bench_message_with_4kb_data_fast(b: &mut Bencher) {
+    let data = vec![0xABu8; 4096];
+    b.iter(|| {
+        black_box(Message::with_data_fast(1, &data))
+    });
+}
+
+// ============================================================================
+// MessagePool Benchmarks
+// ============================================================================
+
+struct MessagePool<const N: usize> {
+    messages: [Message; N],
+    in_use: u64,
+    used_count: usize,
+}
+
+impl<const N: usize> MessagePool<N> {
+    fn new() -> Self {
+        Self {
+            messages: std::array::from_fn(|_| Message::new()),
+            in_use: 0,
+            used_count: 0,
+        }
+    }
+
+    #[inline]
+    fn acquire(&mut self) -> Option<usize> {
+        if self.used_count >= N {
+            return None;
+        }
+        let free_mask = !self.in_use;
+        let idx = free_mask.trailing_zeros() as usize;
+        if idx >= N {
+            return None;
+        }
+        self.in_use |= 1 << idx;
+        self.used_count += 1;
+        // Clear header only (fast)
+        self.messages[idx].tag = 0;
+        self.messages[idx].length = 0;
+        Some(idx)
+    }
+
+    #[inline]
+    fn release(&mut self, idx: usize) {
+        self.in_use &= !(1 << idx);
+        self.used_count -= 1;
+    }
+
+    #[inline]
+    fn get_mut(&mut self, idx: usize) -> &mut Message {
+        &mut self.messages[idx]
+    }
+}
+
+#[bench]
+fn bench_pool_acquire_release(b: &mut Bencher) {
+    let mut pool = MessagePool::<16>::new();
+    b.iter(|| {
+        let idx = pool.acquire().unwrap();
+        pool.release(idx);
+        black_box(idx)
+    });
+}
+
+#[bench]
+fn bench_pool_acquire_write_release(b: &mut Bencher) {
+    let mut pool = MessagePool::<16>::new();
+    let data = b"Hello, pool!";
+    b.iter(|| {
+        let idx = pool.acquire().unwrap();
+        let msg = pool.get_mut(idx);
+        msg.tag = 1;
+        msg.length = data.len() as u32;
+        msg.data[..data.len()].copy_from_slice(data);
+        pool.release(idx);
+        black_box(idx)
+    });
+}
+
+// ============================================================================
+// Batch Submission Benchmarks
+// ============================================================================
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+enum OpType {
+    Send = 0,
+    Receive = 1,
+    Call = 2,
+    Reply = 3,
+    Signal = 4,
+    Wait = 5,
+    Poll = 6,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SubmissionEntry {
+    op: OpType,
+    flags: u8,
+    _reserved: u16,
+    user_data: u32,
+    cap: u64,
+    addr: u64,
+    len: u32,
+    param: u32,
+}
+
+struct SubmissionBatch<const N: usize> {
+    entries: [std::mem::MaybeUninit<SubmissionEntry>; N],
+    count: usize,
+}
+
+impl<const N: usize> SubmissionBatch<N> {
+    fn new() -> Self {
+        Self {
+            // SAFETY: MaybeUninit array doesn't need initialization
+            entries: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            count: 0,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, entry: SubmissionEntry) -> bool {
+        if self.count >= N {
+            return false;
+        }
+        self.entries[self.count].write(entry);
+        self.count += 1;
+        true
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.count = 0;
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.count
+    }
+}
+
+#[bench]
+fn bench_batch_build_8_entries(b: &mut Bencher) {
+    b.iter(|| {
+        let mut batch = SubmissionBatch::<16>::new();
+        for i in 0..8u32 {
+            batch.push(SubmissionEntry {
+                op: OpType::Signal,
+                flags: 0,
+                _reserved: 0,
+                user_data: i,
+                cap: 1,
+                addr: 0xFF,
+                len: 0,
+                param: 0,
+            });
+        }
+        black_box(batch.len())
+    });
+}
+
+#[bench]
+fn bench_batch_reuse_8_entries(b: &mut Bencher) {
+    let mut batch = SubmissionBatch::<16>::new();
+    b.iter(|| {
+        batch.clear();
+        for i in 0..8u32 {
+            batch.push(SubmissionEntry {
+                op: OpType::Signal,
+                flags: 0,
+                _reserved: 0,
+                user_data: i,
+                cap: 1,
+                addr: 0xFF,
+                len: 0,
+                param: 0,
+            });
+        }
+        black_box(batch.len())
+    });
+}
