@@ -196,14 +196,18 @@ pub enum CapError {
 }
 
 /// Capability metadata stored in registry
-struct CapabilityMetadata {
-    object_type: ObjectType,
-    generation: u32,
+pub struct CapabilityMetadata {
+    /// Type of the kernel object
+    pub object_type: ObjectType,
+    /// Generation counter (incremented on revocation)
+    pub generation: u32,
     /// The maximum rights that can be granted for this object
     /// (rights of the original creator capability)
-    rights: Rights,
+    pub rights: Rights,
     /// Reference count for garbage collection
-    ref_count: u32,
+    pub ref_count: u32,
+    /// Process that owns/created this object (for bulk revocation)
+    pub owner_process: Option<crate::process::ProcessId>,
 }
 
 /// Global registry of capability objects
@@ -223,7 +227,13 @@ impl CapabilityRegistry {
         self.objects.get(&id)
     }
 
-    fn insert(&mut self, id: ObjectId, object_type: ObjectType, rights: Rights) {
+    fn insert(
+        &mut self,
+        id: ObjectId,
+        object_type: ObjectType,
+        rights: Rights,
+        owner: Option<crate::process::ProcessId>,
+    ) {
         self.objects.insert(
             id,
             CapabilityMetadata {
@@ -231,13 +241,14 @@ impl CapabilityRegistry {
                 generation: current_generation(),
                 rights,
                 ref_count: 1,
+                owner_process: owner,
             },
         );
     }
 
-    /// Insert with default all rights (for backward compatibility)
+    /// Insert with default all rights and no owner (for backward compatibility)
     fn insert_with_full_rights(&mut self, id: ObjectId, object_type: ObjectType) {
-        self.insert(id, object_type, Rights::all())
+        self.insert(id, object_type, Rights::all(), None)
     }
 
     /// Revoke an object - increment its generation making old caps invalid
@@ -269,9 +280,100 @@ pub fn derive(object_id: ObjectId, new_rights: Rights) -> Result<Capability, Cap
 }
 
 /// Revoke a capability (invalidates all derived capabilities)
+///
+/// ## How Revocation Works
+///
+/// Capabilities use generation counters for revocation. When an object is revoked:
+/// 1. The object's generation counter is incremented
+/// 2. All capabilities holding the old generation become invalid
+/// 3. This includes ALL derived capabilities (they inherit the generation)
+///
+/// This provides O(1) revocation regardless of how many capabilities exist.
+///
+/// ## Example
+///
+/// ```ignore
+/// // Create object with generation 1
+/// let cap = register_object(id, ObjectType::Endpoint, Rights::all());
+///
+/// // Derive some capabilities (all have generation 1)
+/// let cap2 = cap.derive(Rights::READ).unwrap();
+/// let cap3 = cap2.derive(Rights::READ).unwrap();
+///
+/// // Revoke - object generation becomes 2
+/// revoke(id).unwrap();
+///
+/// // ALL caps are now invalid (they have generation 1)
+/// assert!(!cap.is_valid());
+/// assert!(!cap2.is_valid());
+/// assert!(!cap3.is_valid());
+/// ```
 pub fn revoke(object_id: ObjectId) -> Result<(), CapError> {
     let mut registry = REGISTRY.write();
     registry.revoke(object_id)
+}
+
+/// Revoke multiple objects at once
+///
+/// More efficient than calling `revoke` in a loop since we only acquire
+/// the lock once.
+pub fn revoke_many(object_ids: &[ObjectId]) -> Vec<Result<(), CapError>> {
+    let mut registry = REGISTRY.write();
+    object_ids.iter().map(|&id| registry.revoke(id)).collect()
+}
+
+/// Revoke all capabilities for objects owned by a process
+///
+/// This is called when a process exits to clean up all its capabilities.
+/// It revokes all objects where the process was the original creator.
+pub fn revoke_all_for_process(process_id: crate::process::ProcessId) {
+    let mut registry = REGISTRY.write();
+    let mut to_revoke = alloc::vec::Vec::new();
+
+    // Find all objects owned by this process
+    for (id, meta) in registry.objects.iter() {
+        if meta.owner_process == Some(process_id) {
+            to_revoke.push(*id);
+        }
+    }
+
+    // Revoke them all
+    for id in to_revoke {
+        let _ = registry.revoke(id);
+    }
+
+    log::debug!(
+        "Revoked capabilities for process {:?}",
+        process_id
+    );
+}
+
+/// Conditionally revoke a capability only if it matches specific criteria
+///
+/// This allows for fine-grained revocation policies.
+pub fn revoke_if<F>(object_id: ObjectId, predicate: F) -> Result<bool, CapError>
+where
+    F: FnOnce(&CapabilityMetadata) -> bool,
+{
+    let mut registry = REGISTRY.write();
+    let meta = registry.objects.get(&object_id).ok_or(CapError::ObjectNotFound)?;
+
+    if predicate(meta) {
+        registry.revoke(object_id)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Check if a specific capability is still valid (not revoked)
+///
+/// This is a fast path check that doesn't require holding a capability.
+pub fn is_object_valid(object_id: ObjectId, generation: u32) -> bool {
+    let registry = REGISTRY.read();
+    registry
+        .get(object_id)
+        .is_some_and(|meta| meta.generation == generation)
 }
 
 /// Identify a capability - return its type and rights
@@ -396,8 +498,23 @@ pub fn register_object(
     object_type: ObjectType,
     initial_rights: Rights,
 ) -> Capability {
+    // Use current process as owner if available
+    let owner = crate::process::current_process_id();
+    register_object_with_owner(id, object_type, initial_rights, owner)
+}
+
+/// Register a new kernel object with an explicit owner
+///
+/// Like `register_object`, but allows specifying the owning process explicitly.
+/// This is useful for kernel-created objects that should be owned by a specific process.
+pub fn register_object_with_owner(
+    id: ObjectId,
+    object_type: ObjectType,
+    initial_rights: Rights,
+    owner: Option<crate::process::ProcessId>,
+) -> Capability {
     let mut registry = REGISTRY.write();
-    registry.insert(id, object_type, initial_rights);
+    registry.insert(id, object_type, initial_rights, owner);
 
     Capability {
         object_id: id,
@@ -587,5 +704,169 @@ mod tests {
         assert!(derived.rights.contains(Rights::EXECUTE));
         assert!(!derived.rights.contains(Rights::WRITE));
         assert!(!derived.rights.contains(Rights::GRANT)); // GRANT is stripped
+    }
+
+    // =========================================================================
+    // Capability Revocation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_generation_counter_increments() {
+        let gen1 = current_generation();
+        let _ = increment_generation();
+        let gen2 = current_generation();
+        assert!(gen2 > gen1);
+    }
+
+    #[test]
+    fn test_revoke_invalidates_capability() {
+        // Register a new object
+        let object_id = ObjectId::new(ObjectType::Endpoint);
+        let cap = register_object(object_id, ObjectType::Endpoint, Rights::all());
+
+        // Capability should be valid initially
+        assert!(cap.is_valid());
+
+        // Revoke the object
+        revoke(object_id).unwrap();
+
+        // Capability should now be invalid
+        assert!(!cap.is_valid());
+    }
+
+    #[test]
+    fn test_revoke_invalidates_all_derived_capabilities() {
+        // Register object and create chain of derived capabilities
+        let object_id = ObjectId::new(ObjectType::Endpoint);
+        let root_cap = register_object(object_id, ObjectType::Endpoint, Rights::all());
+
+        let derived1 = root_cap.derive_with_grant(Rights::READ | Rights::GRANT).unwrap();
+        let derived2 = derived1.derive_with_grant(Rights::READ | Rights::GRANT).unwrap();
+
+        // All should be valid
+        assert!(root_cap.is_valid());
+        assert!(derived1.is_valid());
+        assert!(derived2.is_valid());
+
+        // Revoke the object
+        revoke(object_id).unwrap();
+
+        // ALL capabilities (root and derived) should be invalid
+        assert!(!root_cap.is_valid());
+        assert!(!derived1.is_valid());
+        assert!(!derived2.is_valid());
+    }
+
+    #[test]
+    fn test_revoke_nonexistent_object() {
+        let fake_id = ObjectId::new_test(999999);
+        let result = revoke(fake_id);
+        assert!(matches!(result, Err(CapError::ObjectNotFound)));
+    }
+
+    #[test]
+    fn test_revoke_many() {
+        // Register multiple objects
+        let id1 = ObjectId::new(ObjectType::Endpoint);
+        let id2 = ObjectId::new(ObjectType::Process);
+        let id3 = ObjectId::new(ObjectType::Thread);
+
+        let cap1 = register_object(id1, ObjectType::Endpoint, Rights::all());
+        let cap2 = register_object(id2, ObjectType::Process, Rights::all());
+        let cap3 = register_object(id3, ObjectType::Thread, Rights::all());
+
+        // All should be valid
+        assert!(cap1.is_valid());
+        assert!(cap2.is_valid());
+        assert!(cap3.is_valid());
+
+        // Revoke all at once
+        let results = revoke_many(&[id1, id2, id3]);
+
+        // All should succeed
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // All should be invalid
+        assert!(!cap1.is_valid());
+        assert!(!cap2.is_valid());
+        assert!(!cap3.is_valid());
+    }
+
+    #[test]
+    fn test_is_object_valid() {
+        let object_id = ObjectId::new(ObjectType::Endpoint);
+        let cap = register_object(object_id, ObjectType::Endpoint, Rights::all());
+
+        // Should be valid with correct generation
+        assert!(is_object_valid(object_id, cap.generation));
+
+        // Should be invalid with wrong generation
+        assert!(!is_object_valid(object_id, cap.generation + 1));
+        assert!(!is_object_valid(object_id, cap.generation.saturating_sub(1)));
+
+        // After revocation, old generation should be invalid
+        revoke(object_id).unwrap();
+        assert!(!is_object_valid(object_id, cap.generation));
+    }
+
+    #[test]
+    fn test_capability_validate() {
+        let object_id = ObjectId::new(ObjectType::Endpoint);
+        let cap = register_object(object_id, ObjectType::Endpoint, Rights::all());
+
+        // Should validate successfully
+        assert!(cap.validate().is_ok());
+
+        // After revocation, should fail
+        revoke(object_id).unwrap();
+        assert!(matches!(cap.validate(), Err(CapError::Revoked)));
+    }
+
+    #[test]
+    fn test_register_object_with_owner() {
+        use crate::process::ProcessId;
+
+        let owner = ProcessId(42);
+        let object_id = ObjectId::new(ObjectType::Thread);
+
+        let cap = register_object_with_owner(
+            object_id,
+            ObjectType::Thread,
+            Rights::READ | Rights::WRITE,
+            Some(owner),
+        );
+
+        assert!(cap.is_valid());
+        assert_eq!(cap.rights, Rights::READ | Rights::WRITE);
+
+        // Verify object type is correct
+        assert_eq!(object_type(object_id), Some(ObjectType::Thread));
+    }
+
+    #[test]
+    fn test_object_exists() {
+        let object_id = ObjectId::new(ObjectType::Endpoint);
+
+        // Should not exist before registration
+        assert!(!object_exists(object_id));
+
+        // Register it
+        let _ = register_object(object_id, ObjectType::Endpoint, Rights::all());
+
+        // Now should exist
+        assert!(object_exists(object_id));
+    }
+
+    #[test]
+    fn test_drop_cap_decrements_refcount() {
+        let object_id = ObjectId::new(ObjectType::Endpoint);
+        let _ = register_object(object_id, ObjectType::Endpoint, Rights::all());
+
+        // Drop should succeed
+        assert!(drop_cap(object_id).is_ok());
+
+        // Drop on nonexistent should fail
+        let fake_id = ObjectId::new_test(888888);
+        assert!(matches!(drop_cap(fake_id), Err(CapError::ObjectNotFound)));
     }
 }

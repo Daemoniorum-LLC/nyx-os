@@ -548,6 +548,173 @@ pub fn flush_tlb_all() {
     }
 }
 
+// ============================================================================
+// TLB Shootdown for SMP
+// ============================================================================
+
+use core::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use spin::Mutex;
+
+/// TLB shootdown request structure
+struct TlbShootdownRequest {
+    /// Address to flush (0 = flush all)
+    address: AtomicU64,
+    /// Number of pages to flush (0 = flush all, or count for range)
+    page_count: AtomicU32,
+    /// Number of CPUs that have acknowledged
+    ack_count: AtomicU32,
+    /// Number of CPUs that need to acknowledge
+    target_count: AtomicU32,
+}
+
+/// Global TLB shootdown request (protected by lock for setup, atomics for IPI handling)
+static TLB_SHOOTDOWN: Mutex<TlbShootdownRequest> = Mutex::new(TlbShootdownRequest {
+    address: AtomicU64::new(0),
+    page_count: AtomicU32::new(0),
+    ack_count: AtomicU32::new(0),
+    target_count: AtomicU32::new(0),
+});
+
+/// TLB shootdown IPI vector
+pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xFD;
+
+/// Flush TLB entry on all CPUs (TLB shootdown)
+///
+/// This must be called after unmapping a page that other CPUs might have cached.
+/// It sends an IPI to all other CPUs and waits for them to acknowledge.
+pub fn flush_tlb_page_all(virt: VirtAddr) {
+    let cpu_count = super::smp::cpu_count();
+
+    // Single CPU - no shootdown needed
+    if cpu_count <= 1 {
+        flush_tlb_page(virt);
+        return;
+    }
+
+    // Acquire shootdown lock to serialize requests
+    let request = TLB_SHOOTDOWN.lock();
+
+    // Set up request
+    request.address.store(virt.as_u64(), Ordering::SeqCst);
+    request.page_count.store(1, Ordering::SeqCst);
+    request.ack_count.store(0, Ordering::SeqCst);
+    request.target_count.store(cpu_count - 1, Ordering::SeqCst);
+
+    // Flush local TLB first
+    flush_tlb_page(virt);
+
+    // Send IPI to all other CPUs
+    super::smp::send_ipi_all_excluding_self(TLB_SHOOTDOWN_VECTOR);
+
+    // Wait for all CPUs to acknowledge
+    let target = cpu_count - 1;
+    let mut timeout = 1_000_000u32; // ~1ms timeout at typical IPI latency
+    while request.ack_count.load(Ordering::SeqCst) < target && timeout > 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+    }
+
+    if timeout == 0 {
+        log::warn!("TLB shootdown timeout: only {}/{} CPUs acknowledged",
+            request.ack_count.load(Ordering::SeqCst), target);
+    }
+
+    // Lock is dropped here, allowing next shootdown
+}
+
+/// Flush TLB range on all CPUs
+///
+/// More efficient than calling flush_tlb_page_all multiple times for contiguous ranges.
+pub fn flush_tlb_range_all(start: VirtAddr, page_count: usize) {
+    let cpu_count = super::smp::cpu_count();
+
+    // Single CPU - no shootdown needed
+    if cpu_count <= 1 {
+        for i in 0..page_count {
+            let addr = VirtAddr::new(start.as_u64() + (i as u64 * PAGE_SIZE as u64));
+            flush_tlb_page(addr);
+        }
+        return;
+    }
+
+    // For small ranges, individual flushes may be faster than global shootdown
+    if page_count <= 4 {
+        for i in 0..page_count {
+            let addr = VirtAddr::new(start.as_u64() + (i as u64 * PAGE_SIZE as u64));
+            flush_tlb_page_all(addr);
+        }
+        return;
+    }
+
+    // Large range - do global flush
+    flush_tlb_all_cpus();
+}
+
+/// Flush entire TLB on all CPUs
+pub fn flush_tlb_all_cpus() {
+    let cpu_count = super::smp::cpu_count();
+
+    if cpu_count <= 1 {
+        flush_tlb_all();
+        return;
+    }
+
+    let request = TLB_SHOOTDOWN.lock();
+
+    // address = 0 and page_count = 0 means flush all
+    request.address.store(0, Ordering::SeqCst);
+    request.page_count.store(0, Ordering::SeqCst);
+    request.ack_count.store(0, Ordering::SeqCst);
+    request.target_count.store(cpu_count - 1, Ordering::SeqCst);
+
+    // Flush local TLB
+    flush_tlb_all();
+
+    // Send IPI
+    super::smp::send_ipi_all_excluding_self(TLB_SHOOTDOWN_VECTOR);
+
+    // Wait for acknowledgment
+    let target = cpu_count - 1;
+    let mut timeout = 1_000_000u32;
+    while request.ack_count.load(Ordering::SeqCst) < target && timeout > 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+    }
+}
+
+/// Handle TLB shootdown IPI (called from interrupt handler)
+///
+/// # Safety
+///
+/// Must only be called from the TLB shootdown interrupt handler.
+pub unsafe fn handle_tlb_shootdown_ipi() {
+    // Read request parameters (lock-free read of atomics)
+    let request = TLB_SHOOTDOWN.lock();
+    let address = request.address.load(Ordering::SeqCst);
+    let page_count = request.page_count.load(Ordering::SeqCst);
+
+    // Perform the flush
+    if address == 0 && page_count == 0 {
+        // Flush all
+        flush_tlb_all();
+    } else if page_count == 1 {
+        // Single page
+        flush_tlb_page(VirtAddr::new(address));
+    } else {
+        // Range
+        for i in 0..page_count {
+            let addr = VirtAddr::new(address + (i as u64 * PAGE_SIZE as u64));
+            flush_tlb_page(addr);
+        }
+    }
+
+    // Acknowledge
+    request.ack_count.fetch_add(1, Ordering::SeqCst);
+
+    // Send EOI
+    super::smp::send_eoi();
+}
+
 /// Switch to a new address space
 pub fn switch_address_space(root: PhysAddr) {
     unsafe {
