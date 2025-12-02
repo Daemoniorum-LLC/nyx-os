@@ -1,12 +1,5 @@
 //! cipher - Keyring CLI tool
 
-mod keyring;
-mod crypto;
-mod session;
-mod storage;
-mod ipc;
-mod state;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
@@ -14,7 +7,7 @@ use std::io::{self, Write};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use crate::ipc::{IpcRequest, IpcResponse};
+use nyx_cipher::ipc::{IpcRequest, IpcResponse};
 
 #[derive(Parser)]
 #[command(name = "cipher")]

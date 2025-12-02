@@ -1,42 +1,69 @@
 [workspace]
 resolver = "2"
+
+# ============================================================================
+# WORKSPACE MEMBERS
+# ============================================================================
+# The main workspace includes all userspace components that build with stable
+# Rust. Some crates are excluded due to special requirements:
+#
+# EXCLUDED CRATES:
+#   kernel   - Requires nightly Rust for bare-metal (#![no_std], naked_fn, etc.)
+#              Build separately: cd kernel && make build
+#
+#   spectre  - Requires libclang for PAM bindings generation
+#              Install libclang-dev, then: cargo build -p spectre
+#
+#   aether   - Dependency resolution in progress (not currently buildable)
+#
+#   umbra    - Optional AI deps require external infernum repo
+#   summoner - Optional AI deps require external infernum repo
+#              Build separately if infernum repo is available
+#
+# See CONTRIBUTING.md for detailed build instructions.
+# ============================================================================
+
 members = [
-    # "kernel",  # Excluded - requires nightly Rust features for bare-metal
+    # Core libraries
     "libs/libnyx",
     "libs/libnyx-ipc",
     "libs/libnyx-platform",
     "libs/grimoire-core",
     "libs/grimoire-client",
+
+    # Init and service management
     "init",
     "nyx-serviced",
-    # "spectre",  # Temporarily excluded - requires libclang for PAM bindings
-    "vesper",
-    "phantom",
-    "nexus",
-    "wraith",
-    "cipher",
-    "scribe",
-    "chronos",
-    "slumber",
-    "sentinel",
-    "iris",
-    "vault",
-    "agents/guardian",
-    "agents/archon",
-    "agents/arachne",
-    "agents/grimoire",
-    # "aether",  # Temporarily excluded - dependency issues
-    "umbra",
-    "summoner",
-    "herald",
+
+    # System daemons
+    "vesper",       # Audio (PipeWire-compatible)
+    "phantom",      # Device management (udev-like)
+    "nexus",        # Package management
+    "wraith",       # Network configuration (DHCP)
+    "cipher",       # Secrets management
+    "scribe",       # System logging
+    "chronos",      # Time synchronization
+    "slumber",      # Power management
+    "sentinel",     # System monitoring
+    "iris",         # Display management
+    "vault",        # Key storage
+    # "umbra",      # Shell - excluded, optional AI deps require infernum repo
+    # "summoner",   # Session management - excluded, optional AI deps require infernum repo
+    "herald",       # Notifications
+
+    # AI-powered agents
+    "agents/guardian",   # Security policy
+    "agents/archon",     # Process orchestration
+    "agents/arachne",    # Network management
+    "agents/grimoire",   # Persona management
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/daemoniorum/nyx"
+license = "LicenseRef-Proprietary"
+repository = "https://github.com/Daemoniorum-LLC/nyx-os"
 
 [workspace.dependencies]
 # Core

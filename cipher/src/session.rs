@@ -1,9 +1,22 @@
 //! Session management for keyring access
 
-use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rand::RngCore;
+use thiserror::Error;
+
+/// Session management errors
+#[derive(Error, Debug)]
+pub enum SessionError {
+    #[error("invalid session token")]
+    InvalidSession,
+
+    #[error("session expired after {timeout_secs}s of inactivity")]
+    SessionExpired { timeout_secs: u64 },
+}
+
+type Result<T> = std::result::Result<T, SessionError>;
 
 /// Session token
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -13,7 +26,7 @@ impl SessionToken {
     pub fn generate() -> Self {
         let mut bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut bytes);
-        Self(base64::encode(&bytes))
+        Self(BASE64.encode(&bytes))
     }
 
     pub fn as_str(&self) -> &str {
@@ -96,13 +109,16 @@ impl SessionManager {
     pub fn validate(&mut self, token: &str) -> Result<&mut Session> {
         // Check if session exists
         if !self.sessions.contains_key(token) {
-            return Err(anyhow!("Invalid session"));
+            return Err(SessionError::InvalidSession);
         }
 
         // Check if expired (using immutable borrow) and remove if so
-        if self.sessions.get(token).map(|s| s.is_expired()).unwrap_or(false) {
-            self.sessions.remove(token);
-            return Err(anyhow!("Session expired"));
+        if let Some(session) = self.sessions.get(token) {
+            if session.is_expired() {
+                let timeout_secs = session.timeout.as_secs();
+                self.sessions.remove(token);
+                return Err(SessionError::SessionExpired { timeout_secs });
+            }
         }
 
         // Now safe to get mutable reference
@@ -124,7 +140,7 @@ impl SessionManager {
     /// Grant collection access to session
     pub fn grant_access(&mut self, token: &str, collection: &str) -> Result<()> {
         let session = self.sessions.get_mut(token)
-            .ok_or_else(|| anyhow!("Invalid session"))?;
+            .ok_or(SessionError::InvalidSession)?;
 
         if !session.collections.contains(&collection.to_string()) {
             session.collections.push(collection.to_string());
@@ -136,7 +152,7 @@ impl SessionManager {
     /// Revoke collection access from session
     pub fn revoke_access(&mut self, token: &str, collection: &str) -> Result<()> {
         let session = self.sessions.get_mut(token)
-            .ok_or_else(|| anyhow!("Invalid session"))?;
+            .ok_or(SessionError::InvalidSession)?;
 
         session.collections.retain(|c| c != collection);
         Ok(())
@@ -145,7 +161,7 @@ impl SessionManager {
     /// Set session timeout
     pub fn set_timeout(&mut self, token: &str, timeout: Duration) -> Result<()> {
         let session = self.sessions.get_mut(token)
-            .ok_or_else(|| anyhow!("Invalid session"))?;
+            .ok_or(SessionError::InvalidSession)?;
 
         session.timeout = timeout;
         Ok(())

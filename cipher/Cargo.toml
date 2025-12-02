@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "Nyx secrets and keyring daemon"
 
+[lib]
+name = "nyx_cipher"
+path = "src/lib.rs"
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -15,7 +19,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 rand = { workspace = true }
 zeroize = { version = "1.8", features = ["derive"] }
 argon2 = "0.5"
@@ -31,3 +35,11 @@ path = "src/main.rs"
 [[bin]]
 name = "cipherctl"
 path = "src/cli.rs"
+
+[dev-dependencies]
+proptest = "1.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "crypto_bench"
+harness = false

@@ -7,24 +7,17 @@
 //! - Session-based unlocking
 //! - D-Bus compatible interface
 
-mod keyring;
-mod crypto;
-mod session;
-mod storage;
-mod ipc;
-mod state;
-
 use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, error};
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::keyring::Keyring;
-use crate::session::SessionManager;
-use crate::ipc::CipherServer;
-use crate::state::CipherState;
+use nyx_cipher::keyring::Keyring;
+use nyx_cipher::session::SessionManager;
+use nyx_cipher::ipc::CipherServer;
+use nyx_cipher::state::CipherState;
 
 #[derive(Parser)]
 #[command(name = "cipherd")]

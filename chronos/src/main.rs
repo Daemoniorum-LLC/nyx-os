@@ -33,16 +33,16 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser, Debug)]
 #[command(name = "chronosd", version, about)]
 struct Args {
-    /// Configuration file path
-    #[arg(short, long, default_value = "/etc/chronos/chronos.toml")]
+    /// Configuration file path (also: CHRONOS_CONFIG env var)
+    #[arg(short, long, env = "CHRONOS_CONFIG", default_value = "/etc/chronos/chronos.toml")]
     config: PathBuf,
 
     /// Run in foreground (don't daemonize)
     #[arg(short, long)]
     foreground: bool,
 
-    /// Enable debug logging
-    #[arg(short, long)]
+    /// Enable debug logging (also: NYX_DEBUG env var)
+    #[arg(short, long, env = "NYX_DEBUG")]
     debug: bool,
 }
 
