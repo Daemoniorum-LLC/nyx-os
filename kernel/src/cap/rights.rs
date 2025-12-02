@@ -173,12 +173,24 @@ impl Rights {
 
         let mut parts: Vec<&str> = Vec::new();
 
-        if self.contains(Rights::READ) { parts.push("read"); }
-        if self.contains(Rights::WRITE) { parts.push("write"); }
-        if self.contains(Rights::EXECUTE) { parts.push("exec"); }
-        if self.contains(Rights::GRANT) { parts.push("grant"); }
-        if self.contains(Rights::INFERENCE) { parts.push("inference"); }
-        if self.contains(Rights::GPU_COMPUTE) { parts.push("gpu"); }
+        if self.contains(Rights::READ) {
+            parts.push("read");
+        }
+        if self.contains(Rights::WRITE) {
+            parts.push("write");
+        }
+        if self.contains(Rights::EXECUTE) {
+            parts.push("exec");
+        }
+        if self.contains(Rights::GRANT) {
+            parts.push("grant");
+        }
+        if self.contains(Rights::INFERENCE) {
+            parts.push("inference");
+        }
+        if self.contains(Rights::GPU_COMPUTE) {
+            parts.push("gpu");
+        }
         // ... more as needed
 
         if parts.is_empty() {
@@ -326,9 +338,18 @@ mod tests {
     fn test_all_rights_independent() {
         // Each right should not overlap with others (non-combination rights)
         let individual_rights = [
-            Rights::READ, Rights::WRITE, Rights::EXECUTE, Rights::GRANT,
-            Rights::REVOKE, Rights::DUPLICATE, Rights::TRANSFER, Rights::INSPECT,
-            Rights::MAP, Rights::UNMAP, Rights::SEND, Rights::RECEIVE,
+            Rights::READ,
+            Rights::WRITE,
+            Rights::EXECUTE,
+            Rights::GRANT,
+            Rights::REVOKE,
+            Rights::DUPLICATE,
+            Rights::TRANSFER,
+            Rights::INSPECT,
+            Rights::MAP,
+            Rights::UNMAP,
+            Rights::SEND,
+            Rights::RECEIVE,
         ];
 
         for (i, &a) in individual_rights.iter().enumerate() {

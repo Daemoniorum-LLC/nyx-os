@@ -109,6 +109,83 @@ impl SigInfo {
         self
     }
 
+    /// Create SIGCHLD info for child exit
+    ///
+    /// This creates a properly populated SigInfo for SIGCHLD delivery
+    /// when a child process exits, is killed by a signal, or dumps core.
+    pub fn child_exited(child_pid: ProcessId, exit_code: i32, dumped_core: bool) -> Self {
+        let code = if exit_code < 0 {
+            // Negative exit code means killed by signal
+            if dumped_core {
+                SigCode::ChldDumped
+            } else {
+                SigCode::ChldKilled
+            }
+        } else {
+            SigCode::ChldExited
+        };
+
+        Self {
+            signo: Signal::SIGCHLD.as_raw(),
+            errno: 0,
+            code,
+            sender_pid: Some(child_pid),
+            sender_uid: None, // Will be populated by caller if needed
+            status: exit_code,
+            utime: 0, // Would be populated from process accounting
+            stime: 0,
+            value: SigVal::Int(0),
+            addr: None,
+            addr_lsb: 0,
+            timerid: 0,
+            overrun: 0,
+            fd: None,
+            band: 0,
+        }
+    }
+
+    /// Create SIGCHLD info for child stopped
+    pub fn child_stopped(child_pid: ProcessId, stop_signal: u8) -> Self {
+        Self {
+            signo: Signal::SIGCHLD.as_raw(),
+            errno: 0,
+            code: SigCode::ChldStopped,
+            sender_pid: Some(child_pid),
+            sender_uid: None,
+            status: (stop_signal as i32) << 8 | 0x7F, // POSIX wait status encoding
+            utime: 0,
+            stime: 0,
+            value: SigVal::Int(0),
+            addr: None,
+            addr_lsb: 0,
+            timerid: 0,
+            overrun: 0,
+            fd: None,
+            band: 0,
+        }
+    }
+
+    /// Create SIGCHLD info for child continued
+    pub fn child_continued(child_pid: ProcessId) -> Self {
+        Self {
+            signo: Signal::SIGCHLD.as_raw(),
+            errno: 0,
+            code: SigCode::ChldContinued,
+            sender_pid: Some(child_pid),
+            sender_uid: None,
+            status: 0xFFFF, // POSIX WCONTINUED status
+            utime: 0,
+            stime: 0,
+            value: SigVal::Int(0),
+            addr: None,
+            addr_lsb: 0,
+            timerid: 0,
+            overrun: 0,
+            fd: None,
+            band: 0,
+        }
+    }
+
     /// Builder: set error number
     pub fn with_errno(mut self, errno: i32) -> Self {
         self.errno = errno;

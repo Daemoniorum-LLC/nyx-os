@@ -483,14 +483,70 @@ pub fn exit(exit_code: i32) {
         }
     }
 
-    // Wake parent if waiting
+    // Signal parent that child exited (SIGCHLD)
     if let Some(parent_pid) = get_process(pid).and_then(|p| p.parent) {
-        // Signal parent that child exited
-        // TODO: Send SIGCHLD or wake from waitpid
+        send_sigchld_to_parent(parent_pid, pid, exit_code, false);
     }
 
     // Trigger reschedule
     crate::sched::schedule();
+}
+
+/// Send SIGCHLD to parent process when child exits/stops/continues
+///
+/// This function:
+/// 1. Creates a properly formatted SigInfo for SIGCHLD
+/// 2. Queues the signal to the parent process
+/// 3. Wakes any parent threads blocked in waitpid
+fn send_sigchld_to_parent(parent_pid: ProcessId, child_pid: ProcessId, exit_code: i32, dumped_core: bool) {
+    use crate::signal::{info::SigInfo, Signal, PROCESS_SIGNALS};
+
+    log::debug!(
+        "Sending SIGCHLD to parent {:?} for child {:?} (exit_code={})",
+        parent_pid, child_pid, exit_code
+    );
+
+    // Create SIGCHLD info with proper status encoding
+    let info = SigInfo::child_exited(child_pid, exit_code, dumped_core);
+
+    // Queue signal to parent
+    {
+        let mut signals = PROCESS_SIGNALS.write();
+        if let Some(parent_state) = signals.get_mut(&parent_pid) {
+            if let Err(e) = parent_state.pending.enqueue(Signal::SIGCHLD.as_raw(), info) {
+                log::warn!("Failed to queue SIGCHLD to parent {:?}: {:?}", parent_pid, e);
+            }
+        }
+    }
+
+    // Wake parent threads that might be blocked in waitpid
+    wake_waiting_parent(parent_pid);
+}
+
+/// Wake parent threads blocked in waitpid
+fn wake_waiting_parent(parent_pid: ProcessId) {
+    // Find threads belonging to the parent process that are blocked waiting for children
+    let processes = PROCESSES.read();
+    if let Some(parent) = processes.get(&parent_pid) {
+        for thread_id in &parent.threads {
+            let mut threads = crate::sched::THREADS.write();
+            if let Some(thread) = threads.get_mut(thread_id) {
+                if matches!(thread.state, ThreadState::Blocked(crate::sched::BlockReason::WaitChild)) {
+                    // Wake this thread - it was waiting for a child
+                    thread.state = ThreadState::Ready;
+
+                    // Re-enqueue for scheduling
+                    let cpu_id = 0u32; // Simplified - ideally use parent's preferred CPU
+                    let mut per_cpu = crate::sched::PER_CPU.write();
+                    if let Some(cpu_sched) = per_cpu.get_mut(cpu_id as usize) {
+                        cpu_sched.enqueue(*thread_id);
+                    }
+
+                    log::trace!("Woke parent thread {:?} from waitpid", thread_id);
+                }
+            }
+        }
+    }
 }
 
 /// Wait for a child process to exit
@@ -736,48 +792,100 @@ pub fn current_pid() -> Option<ProcessId> {
 pub fn terminate(pid: ProcessId, exit_code: i32) {
     log::info!("Terminating process {:?} with exit code {}", pid, exit_code);
 
-    let mut processes = PROCESSES.write();
-    if let Some(proc) = processes.get_mut(&pid) {
-        proc.state = ProcessState::Zombie(exit_code);
-        proc.exit_code = exit_code;
+    // Determine if this is a core dump (negative exit codes indicate signal death)
+    let dumped_core = exit_code < 0 && matches!(
+        exit_code.abs() as u8,
+        3 | 4 | 6 | 7 | 8 | 11 | 24 | 25 | 31 // SIGQUIT, SIGILL, SIGABRT, etc.
+    );
 
-        // Terminate all threads
-        for thread_id in &proc.threads {
-            let mut threads = crate::sched::THREADS.write();
-            if let Some(thread) = threads.get_mut(thread_id) {
-                thread.state = ThreadState::Terminated;
+    let parent_pid = {
+        let mut processes = PROCESSES.write();
+        let parent = if let Some(proc) = processes.get_mut(&pid) {
+            proc.state = ProcessState::Zombie(exit_code);
+            proc.exit_code = exit_code;
+
+            // Terminate all threads
+            for thread_id in &proc.threads {
+                let mut threads = crate::sched::THREADS.write();
+                if let Some(thread) = threads.get_mut(thread_id) {
+                    thread.state = ThreadState::Terminated;
+                }
             }
-        }
+
+            proc.parent
+        } else {
+            None
+        };
+        parent
+    };
+
+    // Send SIGCHLD to parent
+    if let Some(parent_pid) = parent_pid {
+        send_sigchld_to_parent(parent_pid, pid, exit_code, dumped_core);
     }
 
     // Trigger reschedule if we killed the current process
     if current_process_id() == Some(pid) {
-        drop(processes);
         crate::sched::schedule();
     }
 }
 
 /// Stop a process (SIGSTOP/SIGTSTP)
 pub fn stop(pid: ProcessId) {
-    log::info!("Stopping process {:?}", pid);
+    stop_with_signal(pid, 19) // Default to SIGSTOP
+}
 
-    let mut processes = PROCESSES.write();
-    if let Some(proc) = processes.get_mut(&pid) {
-        proc.state = ProcessState::Stopped;
+/// Stop a process with a specific stop signal (SIGSTOP=19, SIGTSTP=20, etc.)
+pub fn stop_with_signal(pid: ProcessId, stop_signal: u8) {
+    log::info!("Stopping process {:?} with signal {}", pid, stop_signal);
 
-        // Stop all threads
-        for thread_id in &proc.threads {
-            let mut threads = crate::sched::THREADS.write();
-            if let Some(thread) = threads.get_mut(thread_id) {
-                thread.state = ThreadState::Blocked(crate::sched::BlockReason::Sleep);
+    let parent_pid = {
+        let mut processes = PROCESSES.write();
+        let parent = if let Some(proc) = processes.get_mut(&pid) {
+            proc.state = ProcessState::Stopped;
+
+            // Stop all threads
+            for thread_id in &proc.threads {
+                let mut threads = crate::sched::THREADS.write();
+                if let Some(thread) = threads.get_mut(thread_id) {
+                    thread.state = ThreadState::Blocked(crate::sched::BlockReason::Sleep);
+                }
             }
-        }
+
+            proc.parent
+        } else {
+            None
+        };
+        parent
+    };
+
+    // Send SIGCHLD to parent with CLD_STOPPED code
+    if let Some(parent_pid) = parent_pid {
+        send_sigchld_stopped(parent_pid, pid, stop_signal);
     }
 
     // Trigger reschedule if we stopped the current process
     if current_process_id() == Some(pid) {
-        drop(processes);
         crate::sched::schedule();
+    }
+}
+
+/// Send SIGCHLD to parent for stopped child
+fn send_sigchld_stopped(parent_pid: ProcessId, child_pid: ProcessId, stop_signal: u8) {
+    use crate::signal::{info::SigInfo, Signal, PROCESS_SIGNALS};
+
+    log::debug!(
+        "Sending SIGCHLD (stopped) to parent {:?} for child {:?}",
+        parent_pid, child_pid
+    );
+
+    let info = SigInfo::child_stopped(child_pid, stop_signal);
+
+    let mut signals = PROCESS_SIGNALS.write();
+    if let Some(parent_state) = signals.get_mut(&parent_pid) {
+        if let Err(e) = parent_state.pending.enqueue(Signal::SIGCHLD.as_raw(), info) {
+            log::warn!("Failed to queue SIGCHLD (stopped) to parent {:?}: {:?}", parent_pid, e);
+        }
     }
 }
 
@@ -785,25 +893,58 @@ pub fn stop(pid: ProcessId) {
 pub fn resume(pid: ProcessId) {
     log::info!("Resuming process {:?}", pid);
 
-    let mut processes = PROCESSES.write();
-    if let Some(proc) = processes.get_mut(&pid) {
-        if proc.state == ProcessState::Stopped {
-            proc.state = ProcessState::Running;
+    let parent_pid = {
+        let mut processes = PROCESSES.write();
+        let parent = if let Some(proc) = processes.get_mut(&pid) {
+            if proc.state == ProcessState::Stopped {
+                proc.state = ProcessState::Running;
 
-            // Make threads runnable again
-            for thread_id in &proc.threads {
-                let mut threads = crate::sched::THREADS.write();
-                if let Some(thread) = threads.get_mut(thread_id) {
-                    thread.state = ThreadState::Ready;
+                // Make threads runnable again
+                for thread_id in &proc.threads {
+                    let mut threads = crate::sched::THREADS.write();
+                    if let Some(thread) = threads.get_mut(thread_id) {
+                        thread.state = ThreadState::Ready;
 
-                    // Re-enqueue thread
-                    let cpu_id = 0u32; // Simplified
-                    let mut per_cpu = crate::sched::PER_CPU.write();
-                    if let Some(cpu_sched) = per_cpu.get_mut(cpu_id as usize) {
-                        cpu_sched.enqueue(*thread_id);
+                        // Re-enqueue thread
+                        let cpu_id = 0u32; // Simplified
+                        let mut per_cpu = crate::sched::PER_CPU.write();
+                        if let Some(cpu_sched) = per_cpu.get_mut(cpu_id as usize) {
+                            cpu_sched.enqueue(*thread_id);
+                        }
                     }
                 }
+
+                proc.parent
+            } else {
+                None
             }
+        } else {
+            None
+        };
+        parent
+    };
+
+    // Send SIGCHLD to parent with CLD_CONTINUED code
+    if let Some(parent_pid) = parent_pid {
+        send_sigchld_continued(parent_pid, pid);
+    }
+}
+
+/// Send SIGCHLD to parent for continued child
+fn send_sigchld_continued(parent_pid: ProcessId, child_pid: ProcessId) {
+    use crate::signal::{info::SigInfo, Signal, PROCESS_SIGNALS};
+
+    log::debug!(
+        "Sending SIGCHLD (continued) to parent {:?} for child {:?}",
+        parent_pid, child_pid
+    );
+
+    let info = SigInfo::child_continued(child_pid);
+
+    let mut signals = PROCESS_SIGNALS.write();
+    if let Some(parent_state) = signals.get_mut(&parent_pid) {
+        if let Err(e) = parent_state.pending.enqueue(Signal::SIGCHLD.as_raw(), info) {
+            log::warn!("Failed to queue SIGCHLD (continued) to parent {:?}: {:?}", parent_pid, e);
         }
     }
 }

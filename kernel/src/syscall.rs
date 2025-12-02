@@ -2,15 +2,34 @@
 //!
 //! This module provides the kernel's system call handling infrastructure.
 //! All user-space requests pass through here and are dispatched to appropriate handlers.
+//!
+//! ## Security
+//!
+//! All syscall handlers use the `mem::user` module for safe userspace memory access.
+//! This ensures:
+//! - Pointers are validated to be within userspace bounds
+//! - Memory is verified to be mapped before access
+//! - Write operations verify write permissions
+//! - No kernel memory can be read or written via syscalls
 
 use crate::cap::{Capability, ObjectId, ObjectType, Rights};
 use crate::ipc;
+use crate::mem::user::{copy_from_user, copy_string_from_user, copy_to_user, UserMemError};
 use crate::mem::{VirtAddr, PAGE_SIZE};
 use crate::process::{ProcessId, SpawnArgs, SpawnError};
-use crate::sched::{SchedClass, ThreadState, BlockReason};
-use alloc::string::{String, ToString};
+use crate::sched::{BlockReason, SchedClass, ThreadState};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::time::Duration;
+
+/// Maximum message size for IPC operations (4 KB)
+const MAX_IPC_MSG_SIZE: usize = 4096;
+
+/// Maximum path length for spawn operations
+const MAX_PATH_LEN: usize = 4096;
+
+/// Maximum debug message length
+const MAX_DEBUG_MSG_LEN: usize = 1024;
 
 /// System call numbers
 #[repr(u64)]
@@ -177,6 +196,21 @@ pub enum SyscallError {
     IoError = -11,
     TooManyProcesses = -12,
     NoChild = -13,
+    BadAddress = -14,
+}
+
+/// Convert user memory errors to syscall errors
+impl From<UserMemError> for SyscallError {
+    fn from(err: UserMemError) -> Self {
+        match err {
+            UserMemError::NullPointer => SyscallError::BadAddress,
+            UserMemError::InvalidAddress => SyscallError::BadAddress,
+            UserMemError::NotMapped => SyscallError::BadAddress,
+            UserMemError::PermissionDenied => SyscallError::PermissionDenied,
+            UserMemError::SizeTooLarge => SyscallError::InvalidArgument,
+            UserMemError::AddressOverflow => SyscallError::BadAddress,
+        }
+    }
 }
 
 // ============================================================================
@@ -214,19 +248,19 @@ fn handle_send(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let msg_len = regs.arg2 as usize;
     let timeout_ns = regs.arg3;
 
+    // Validate message size
+    if msg_len > MAX_IPC_MSG_SIZE {
+        return Err(SyscallError::InvalidArgument);
+    }
+
     let timeout = if timeout_ns == u64::MAX {
         None
     } else {
         Some(Duration::from_nanos(timeout_ns))
     };
 
-    // Copy message from userspace
-    let msg = unsafe {
-        if msg_len > 4096 {
-            return Err(SyscallError::InvalidArgument);
-        }
-        core::slice::from_raw_parts(msg_ptr, msg_len).to_vec()
-    };
+    // Safely copy message from userspace
+    let msg = copy_from_user(msg_ptr, msg_len)?;
 
     match ipc::send(ObjectId::from_raw(dest_cap), &msg, timeout) {
         Ok(_) => Ok(0),
@@ -240,6 +274,11 @@ fn handle_receive(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let buf_len = regs.arg2 as usize;
     let timeout_ns = regs.arg3;
 
+    // Validate buffer size
+    if buf_len > MAX_IPC_MSG_SIZE {
+        return Err(SyscallError::InvalidArgument);
+    }
+
     let timeout = if timeout_ns == u64::MAX {
         None
     } else {
@@ -249,9 +288,8 @@ fn handle_receive(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     match ipc::receive(ObjectId::from_raw(src_cap), timeout) {
         Ok(msg) => {
             let copy_len = core::cmp::min(msg.len(), buf_len);
-            unsafe {
-                core::ptr::copy_nonoverlapping(msg.as_ptr(), buf_ptr, copy_len);
-            }
+            // Safely copy data to userspace
+            copy_to_user(buf_ptr, &msg[..copy_len])?;
             Ok(copy_len as u64)
         }
         Err(_) => Err(SyscallError::WouldBlock),
@@ -265,20 +303,19 @@ fn handle_call(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let resp_ptr = regs.arg3 as *mut u8;
     let resp_len = regs.arg4 as usize;
 
-    // Copy request from userspace
-    let req = unsafe {
-        if req_len > 4096 {
-            return Err(SyscallError::InvalidArgument);
-        }
-        core::slice::from_raw_parts(req_ptr, req_len).to_vec()
-    };
+    // Validate sizes
+    if req_len > MAX_IPC_MSG_SIZE || resp_len > MAX_IPC_MSG_SIZE {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Safely copy request from userspace
+    let req = copy_from_user(req_ptr, req_len)?;
 
     match ipc::call(ObjectId::from_raw(dest_cap), &req) {
         Ok(resp) => {
             let copy_len = core::cmp::min(resp.len(), resp_len);
-            unsafe {
-                core::ptr::copy_nonoverlapping(resp.as_ptr(), resp_ptr, copy_len);
-            }
+            // Safely copy response to userspace
+            copy_to_user(resp_ptr, &resp[..copy_len])?;
             Ok(copy_len as u64)
         }
         Err(_) => Err(SyscallError::InvalidCapability),
@@ -290,12 +327,13 @@ fn handle_reply(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let msg_ptr = regs.arg1 as *const u8;
     let msg_len = regs.arg2 as usize;
 
-    let msg = unsafe {
-        if msg_len > 4096 {
-            return Err(SyscallError::InvalidArgument);
-        }
-        core::slice::from_raw_parts(msg_ptr, msg_len).to_vec()
-    };
+    // Validate message size
+    if msg_len > MAX_IPC_MSG_SIZE {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Safely copy message from userspace
+    let msg = copy_from_user(msg_ptr, msg_len)?;
 
     match ipc::reply(ObjectId::from_raw(reply_cap), &msg) {
         Ok(_) => Ok(0),
@@ -378,8 +416,9 @@ fn handle_cap_identify(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
 fn handle_cap_grant(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let cap_id = regs.arg0;
     let target_process = ProcessId(regs.arg1);
+    let rights_mask = regs.arg2; // New: rights mask for granted capability
 
-    match crate::cap::grant(ObjectId::from_raw(cap_id), target_process) {
+    match crate::cap::grant_with_rights(ObjectId::from_raw(cap_id), target_process, rights_mask) {
         Ok(new_cap) => Ok(new_cap.object_id.as_u64()),
         Err(_) => Err(SyscallError::InvalidCapability),
     }
@@ -404,70 +443,186 @@ fn handle_mem_map(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let prot = regs.arg2 as u32;
     let flags = regs.arg3 as u32;
 
-    // Get current process's address space
-    let pid = crate::process::current_process_id()
-        .ok_or(SyscallError::InvalidCapability)?;
+    // Validate length
+    if length == 0 || length > 1024 * 1024 * 1024 {
+        return Err(SyscallError::InvalidArgument);
+    }
 
-    let proc = crate::process::get_process(pid)
-        .ok_or(SyscallError::InvalidCapability)?;
+    // Get current process
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+
+    let mut proc_guard =
+        crate::process::get_process_mut(pid).ok_or(SyscallError::InvalidCapability)?;
 
     // Convert protection flags
     let protection = crate::mem::virt::Protection::from_bits_truncate(prot as u8);
 
-    // Find suitable address if hint is 0
+    // Find suitable address
     let addr = if addr_hint == 0 {
-        // Simple allocator: use fixed base + offset
-        VirtAddr::new(0x0000_1000_0000_0000 + length)
+        // Use the process's next available address
+        find_free_region(&proc_guard.address_space, length)?
     } else {
         VirtAddr::new(addr_hint)
     };
 
-    // For now, just return the address (actual mapping happens on fault)
+    // Create the mapping
+    let backing = if flags & 0x1 != 0 {
+        // MAP_ANONYMOUS
+        crate::mem::virt::VmaBacking::Anonymous
+    } else {
+        crate::mem::virt::VmaBacking::Anonymous // File mappings would need fd
+    };
+
+    proc_guard
+        .address_space
+        .map(addr, length, protection, backing)
+        .map_err(|_| SyscallError::OutOfMemory)?;
+
     Ok(addr.as_u64())
 }
 
 fn handle_mem_unmap(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
-    let addr = VirtAddr::new(regs.arg0);
+    let addr = regs.arg0;
     let length = regs.arg1;
 
-    // Get current process's address space
-    let pid = crate::process::current_process_id()
-        .ok_or(SyscallError::InvalidCapability)?;
+    // Validate address is in userspace
+    if addr >= 0x0000_8000_0000_0000 || addr < 0x1000 {
+        return Err(SyscallError::BadAddress);
+    }
+
+    // Validate length
+    if length == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Get current process
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+
+    let mut proc_guard =
+        crate::process::get_process_mut(pid).ok_or(SyscallError::InvalidCapability)?;
 
     // Unmap the region
-    // (simplified - actual implementation would need process write access)
+    proc_guard
+        .address_space
+        .unmap(VirtAddr::new(addr), length)
+        .map_err(|_| SyscallError::BadAddress)?;
+
     Ok(0)
 }
 
 fn handle_mem_protect(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
-    let addr = VirtAddr::new(regs.arg0);
+    let addr = regs.arg0;
     let length = regs.arg1;
     let prot = regs.arg2 as u32;
 
-    // Change protection on memory region
-    // (simplified)
+    // Validate address is in userspace
+    if addr >= 0x0000_8000_0000_0000 || addr < 0x1000 {
+        return Err(SyscallError::BadAddress);
+    }
+
+    // Validate length
+    if length == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Get current process
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+
+    let mut proc_guard =
+        crate::process::get_process_mut(pid).ok_or(SyscallError::InvalidCapability)?;
+
+    let protection = crate::mem::virt::Protection::from_bits_truncate(prot as u8);
+
+    // Change protection on each page in the range
+    let start_page = addr & !(PAGE_SIZE - 1);
+    let end = addr.saturating_add(length);
+    let end_page = (end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+
+    let mut current = start_page;
+    while current < end_page {
+        // Update the VMA protection
+        // This is simplified - a full implementation would split/merge VMAs
+        if let Some(phys) = proc_guard.address_space.translate(VirtAddr::new(current)) {
+            proc_guard
+                .address_space
+                .map_page(VirtAddr::new(current), phys, protection)
+                .map_err(|_| SyscallError::OutOfMemory)?;
+        }
+        current = current.saturating_add(PAGE_SIZE);
+    }
+
     Ok(0)
 }
 
 fn handle_mem_alloc(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
-    let size = regs.arg1;
-    let flags = regs.arg2 as u32;
+    let size = regs.arg0;
+    let _flags = regs.arg1 as u32;
 
-    // Allocate physical frames
-    let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    // Validate size
+    if size == 0 || size > 1024 * 1024 * 1024 {
+        return Err(SyscallError::InvalidArgument);
+    }
 
-    let frame = crate::mem::alloc_frame()
-        .ok_or(SyscallError::OutOfMemory)?;
+    // Allocate required number of physical frames
+    let num_pages = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+
+    // For contiguous allocation, use alloc_frames
+    let frame = crate::mem::alloc_frames(num_pages).ok_or(SyscallError::OutOfMemory)?;
 
     Ok(frame.as_u64())
 }
 
 fn handle_mem_free(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let addr = regs.arg0;
+    let size = regs.arg1;
 
-    // Free physical frame
-    // (simplified - need proper tracking)
+    // Validate the address looks like a physical frame we allocated
+    // (In a full implementation, we'd track allocations)
+    if addr == 0 {
+        return Err(SyscallError::BadAddress);
+    }
+
+    // Free the frames
+    let num_pages = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+    for i in 0..num_pages {
+        let frame_addr = crate::mem::PhysAddr::new(addr + (i as u64) * PAGE_SIZE);
+        crate::mem::free_frame(frame_addr);
+    }
+
     Ok(0)
+}
+
+/// Find a free region in the address space for the given size
+fn find_free_region(
+    addr_space: &crate::mem::AddressSpace,
+    size: u64,
+) -> Result<VirtAddr, SyscallError> {
+    // Start searching from a reasonable base address
+    const USER_BASE: u64 = 0x0000_1000_0000_0000;
+    const USER_TOP: u64 = 0x0000_7FFF_0000_0000;
+
+    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let mut candidate = USER_BASE;
+
+    // Simple first-fit allocator - walk through VMAs to find a gap
+    let mut regions: Vec<_> = addr_space.regions().collect();
+    regions.sort_by_key(|vma| vma.start.as_u64());
+
+    for vma in regions {
+        if candidate + aligned_size <= vma.start.as_u64() {
+            // Found a gap
+            return Ok(VirtAddr::new(candidate));
+        }
+        // Move candidate past this VMA
+        candidate = vma.end.as_u64();
+    }
+
+    // Check if there's space after the last VMA
+    if candidate + aligned_size <= USER_TOP {
+        return Ok(VirtAddr::new(candidate));
+    }
+
+    Err(SyscallError::OutOfMemory)
 }
 
 // ============================================================================
@@ -479,35 +634,37 @@ fn handle_thread_create(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let stack = regs.arg1;
     let arg = regs.arg2;
 
+    // Validate entry point and stack are in userspace
+    if entry >= 0x0000_8000_0000_0000 || entry < 0x1000 {
+        return Err(SyscallError::BadAddress);
+    }
+    if stack >= 0x0000_8000_0000_0000 || stack < 0x1000 {
+        return Err(SyscallError::BadAddress);
+    }
+
     // Get current process
-    let pid = crate::process::current_process_id()
-        .ok_or(SyscallError::InvalidCapability)?;
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
 
-    let mut proc = crate::process::get_process(pid)
-        .ok_or(SyscallError::InvalidCapability)?;
+    let proc = crate::process::get_process(pid).ok_or(SyscallError::InvalidCapability)?;
 
-    // Create new thread
-    let thread = crate::sched::Thread::new_user(
-        entry,
-        stack,
-        proc.address_space.clone(),
-    );
+    // Create new thread with the argument passed via register
+    let mut thread = crate::sched::Thread::new_user(entry, stack, proc.address_space.clone());
+
+    // Set the thread argument in rdi (first argument register on x86_64)
+    thread.registers.rdi = arg;
+
     let thread_id = thread.id;
 
     // Register thread
     crate::sched::THREADS.write().insert(thread_id, thread);
 
-    // Add to process
-    // (Note: Would need mutable access to registered process)
-
-    // Enqueue for scheduling
-    let cpu_id = crate::sched::current_cpu_id();
-    {
-        let mut per_cpu = crate::sched::PER_CPU.write();
-        if let Some(cpu_sched) = per_cpu.get_mut(cpu_id as usize) {
-            cpu_sched.enqueue(thread_id);
-        }
+    // Add thread to process
+    if let Some(mut proc_guard) = crate::process::get_process_mut(pid) {
+        proc_guard.add_thread(thread_id);
     }
+
+    // Enqueue for scheduling on least loaded CPU
+    crate::sched::enqueue_on_least_loaded(thread_id);
 
     Ok(thread_id.0)
 }
@@ -516,6 +673,7 @@ fn handle_thread_exit(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let exit_code = regs.arg0 as i32;
 
     let thread_id = crate::sched::current_thread_id();
+    let pid = crate::process::current_process_id();
 
     // Mark thread as terminated
     {
@@ -525,9 +683,23 @@ fn handle_thread_exit(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
         }
     }
 
+    // Remove thread from process
+    if let Some(pid) = pid {
+        if let Some(mut proc_guard) = crate::process::get_process_mut(pid) {
+            proc_guard.remove_thread(thread_id);
+
+            // If this was the last thread, exit the process
+            if !proc_guard.has_running_threads() {
+                drop(proc_guard);
+                crate::process::exit(exit_code);
+            }
+        }
+    }
+
     // Trigger reschedule
     crate::sched::schedule();
 
+    // Never returns for the exiting thread
     Ok(0)
 }
 
@@ -538,8 +710,14 @@ fn handle_thread_yield(_regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
 
 fn handle_thread_sleep(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let duration_ns = regs.arg0;
-    let duration = Duration::from_nanos(duration_ns);
 
+    // Validate duration (max 1 hour to prevent DoS)
+    const MAX_SLEEP_NS: u64 = 3600 * 1_000_000_000;
+    if duration_ns > MAX_SLEEP_NS {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let duration = Duration::from_nanos(duration_ns);
     crate::sched::sleep(duration);
     Ok(0)
 }
@@ -551,20 +729,32 @@ fn handle_thread_sleep(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
 fn handle_process_spawn(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let path_ptr = regs.arg0 as *const u8;
     let path_len = regs.arg1 as usize;
-    let args_ptr = regs.arg2 as *const u8;
-    let args_len = regs.arg3 as usize;
-    let flags = regs.arg4 as u32;
+    let _args_ptr = regs.arg2 as *const u8;
+    let _args_len = regs.arg3 as usize;
+    let _flags = regs.arg4 as u32;
 
-    // Copy path from userspace
-    let path = unsafe {
-        if path_len > 4096 {
-            return Err(SyscallError::InvalidArgument);
+    // Validate path length
+    if path_len > MAX_PATH_LEN || path_len == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Safely copy path from userspace
+    let path = copy_string_from_user(path_ptr, path_len)?;
+
+    // Trim null terminator if present
+    let path = path.trim_end_matches('\0').to_string();
+
+    // Create spawn args with inherited credentials from current process
+    let (uid, gid) = if let Some(pid) = crate::process::current_process_id() {
+        if let Some(proc) = crate::process::get_process(pid) {
+            (proc.uid, proc.gid)
+        } else {
+            (0, 0)
         }
-        let slice = core::slice::from_raw_parts(path_ptr, path_len);
-        String::from_utf8_lossy(slice).to_string()
+    } else {
+        (0, 0)
     };
 
-    // Create spawn args
     let args = SpawnArgs {
         path: path.clone(),
         args: alloc::vec![path],
@@ -573,8 +763,8 @@ fn handle_process_spawn(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
         sched_class: SchedClass::Normal,
         priority: 0,
         cwd: Some(String::from("/")),
-        uid: 0,
-        gid: 0,
+        uid,
+        gid,
     };
 
     match crate::process::spawn(args) {
@@ -621,11 +811,9 @@ fn handle_process_getpid(_regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
 }
 
 fn handle_process_getppid(_regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
-    let pid = crate::process::current_process_id()
-        .ok_or(SyscallError::InvalidCapability)?;
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
 
-    let proc = crate::process::get_process(pid)
-        .ok_or(SyscallError::InvalidCapability)?;
+    let proc = crate::process::get_process(pid).ok_or(SyscallError::InvalidCapability)?;
 
     Ok(proc.parent.map(|p| p.0).unwrap_or(0))
 }
@@ -639,6 +827,17 @@ fn handle_tensor_alloc(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let device_type = regs.arg1 as u32;
     let alignment = regs.arg2;
 
+    // Validate size (max 16 GB for single tensor)
+    const MAX_TENSOR_SIZE: u64 = 16 * 1024 * 1024 * 1024;
+    if size == 0 || size > MAX_TENSOR_SIZE {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Validate alignment (must be power of 2)
+    if alignment != 0 && !alignment.is_power_of_two() {
+        return Err(SyscallError::InvalidArgument);
+    }
+
     match crate::tensor::allocate_buffer(size, device_type, alignment) {
         Ok((buffer_id, _phys_addr)) => Ok(buffer_id),
         Err(_) => Err(SyscallError::OutOfMemory),
@@ -649,12 +848,8 @@ fn handle_tensor_free(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let tensor_cap = regs.arg0;
 
     // Create capability from raw ID
-    let cap = unsafe {
-        Capability::new_unchecked(
-            ObjectId::from_raw(tensor_cap),
-            Rights::TENSOR_FREE,
-        )
-    };
+    let cap =
+        unsafe { Capability::new_unchecked(ObjectId::from_raw(tensor_cap), Rights::TENSOR_FREE) };
 
     match crate::tensor::tensor_free(cap) {
         Ok(_) => Ok(0),
@@ -667,16 +862,25 @@ fn handle_inference_create(regs: &mut SyscallRegs) -> Result<u64, SyscallError> 
     let config_ptr = regs.arg1 as *const u8;
     let config_len = regs.arg2 as usize;
 
-    // Create capability from raw model ID
-    let cap = unsafe {
-        Capability::new_unchecked(
-            ObjectId::from_raw(model_cap),
-            Rights::MODEL_ACCESS,
-        )
-    };
+    // Validate config length
+    const MAX_CONFIG_SIZE: usize = 64 * 1024; // 64 KB max
+    if config_len > MAX_CONFIG_SIZE {
+        return Err(SyscallError::InvalidArgument);
+    }
 
-    // Default config for now
-    let config = crate::tensor::InferenceConfig::default();
+    // Create capability from raw model ID
+    let cap =
+        unsafe { Capability::new_unchecked(ObjectId::from_raw(model_cap), Rights::MODEL_ACCESS) };
+
+    // Copy and parse config if provided
+    let config = if config_len > 0 && !config_ptr.is_null() {
+        let config_data = copy_from_user(config_ptr, config_len)?;
+        // Parse config from bytes (simplified - just use default for now)
+        let _ = config_data; // Would parse YAML/JSON config here
+        crate::tensor::InferenceConfig::default()
+    } else {
+        crate::tensor::InferenceConfig::default()
+    };
 
     match crate::tensor::inference_create(cap, config) {
         Ok(context_cap) => Ok(context_cap.object_id.as_u64()),
@@ -689,6 +893,11 @@ fn handle_inference_submit(regs: &mut SyscallRegs) -> Result<u64, SyscallError> 
     let input_buffer = regs.arg1;
     let output_buffer = regs.arg2;
     let flags = regs.arg3 as u32;
+
+    // Validate buffer IDs are non-zero
+    if input_buffer == 0 || output_buffer == 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
 
     match crate::tensor::submit_inference(model_id, input_buffer, output_buffer, flags) {
         Ok(request_id) => Ok(request_id),
@@ -704,14 +913,13 @@ fn handle_debug(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let msg_ptr = regs.arg0 as *const u8;
     let msg_len = regs.arg1 as usize;
 
-    // Copy message from userspace and log it
-    let msg = unsafe {
-        if msg_len > 1024 {
-            return Err(SyscallError::InvalidArgument);
-        }
-        let slice = core::slice::from_raw_parts(msg_ptr, msg_len);
-        String::from_utf8_lossy(slice).to_string()
-    };
+    // Validate message length
+    if msg_len > MAX_DEBUG_MSG_LEN {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Safely copy message from userspace
+    let msg = copy_string_from_user(msg_ptr, msg_len)?;
 
     log::debug!("[userspace] {}", msg);
     Ok(0)

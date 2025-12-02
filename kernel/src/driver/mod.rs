@@ -26,8 +26,10 @@
 //! └─────────────────────────────────────────────────────┘
 //! ```
 
+pub mod acpi;
 pub mod block;
 pub mod device;
+pub mod devicetree;
 pub mod irq;
 pub mod mmio;
 pub mod pci;

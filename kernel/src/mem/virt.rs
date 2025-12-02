@@ -1,7 +1,7 @@
 //! Virtual memory manager
 
-use super::{VirtAddr, PhysAddr, PAGE_SIZE};
-use crate::arch::x86_64::paging::{PageMapper, PageFlags, flush_tlb_page};
+use super::{PhysAddr, VirtAddr, PAGE_SIZE};
+use crate::arch::x86_64::paging::{flush_tlb_page, PageFlags, PageMapper};
 use crate::cap::ObjectId;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -80,8 +80,7 @@ impl AddressSpace {
     /// Create a new address space
     pub fn new() -> Self {
         // Allocate page table root
-        let page_table_root = super::alloc_frame()
-            .expect("Failed to allocate page table root");
+        let page_table_root = super::alloc_frame().expect("Failed to allocate page table root");
 
         Self {
             id: ObjectId::new(crate::cap::ObjectType::AddressSpace),
@@ -124,7 +123,8 @@ impl AddressSpace {
         let end = start.as_u64() + size;
 
         // Find and remove overlapping VMAs
-        let to_remove: Vec<_> = self.vmas
+        let to_remove: Vec<_> = self
+            .vmas
             .range(..VirtAddr::new(end))
             .filter(|(_, vma)| vma.end.as_u64() > start.as_u64())
             .map(|(k, _)| *k)
@@ -140,7 +140,8 @@ impl AddressSpace {
     /// Handle page fault
     pub fn handle_fault(&mut self, addr: VirtAddr, write: bool) -> Result<(), VmError> {
         // Find VMA containing the address
-        let vma = self.vmas
+        let vma = self
+            .vmas
             .range(..=addr)
             .next_back()
             .filter(|(_, vma)| vma.end.as_u64() > addr.as_u64())
@@ -204,7 +205,8 @@ impl AddressSpace {
         // Allocate page tables as needed
         let mut allocator = || super::alloc_frame();
 
-        mapper.map_page(virt, phys, flags, &mut allocator)
+        mapper
+            .map_page(virt, phys, flags, &mut allocator)
             .map_err(|e| match e {
                 crate::arch::x86_64::paging::MapError::AlreadyMapped => VmError::Overlap,
                 crate::arch::x86_64::paging::MapError::OutOfMemory => VmError::OutOfMemory,
@@ -221,11 +223,10 @@ impl AddressSpace {
     fn unmap_page(&mut self, virt: VirtAddr) -> Result<PhysAddr, VmError> {
         let mut mapper = PageMapper::new(self.page_table_root);
 
-        mapper.unmap_page(virt)
-            .map_err(|e| match e {
-                crate::arch::x86_64::paging::MapError::NotMapped => VmError::NotMapped,
-                _ => VmError::NotImplemented,
-            })
+        mapper.unmap_page(virt).map_err(|e| match e {
+            crate::arch::x86_64::paging::MapError::NotMapped => VmError::NotMapped,
+            _ => VmError::NotImplemented,
+        })
     }
 
     /// Get the page table root physical address
@@ -259,12 +260,7 @@ impl AddressSpace {
         let aligned_size = (size + super::PAGE_SIZE - 1) & !(super::PAGE_SIZE - 1);
 
         // Map using anonymous backing (pages allocated on demand)
-        self.map(
-            start,
-            aligned_size,
-            protection,
-            VmaBacking::Anonymous,
-        )?;
+        self.map(start, aligned_size, protection, VmaBacking::Anonymous)?;
 
         // Pre-allocate and map pages
         let mut addr = start.as_u64();

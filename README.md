@@ -8,13 +8,15 @@ Part of the [Persona Framework](https://github.com/Daemoniorum-LLC/persona-frame
 
 Nyx is an experimental operating system designed from the ground up for AI workloads. Unlike traditional kernels that bolt on ML support, Nyx treats tensor operations and inference as first-class citizens alongside files, processes, and network sockets.
 
+**Status: Research/Experimental** — This is an active research project. Core subsystems are functional but many features are still in development. See [Development Status](#development-status) for details.
+
 **Core Design Principles:**
 
-- **Zero Ambient Authority** — Pure capability-based security. No process has implicit permissions.
-- **Memory Safety** — Rust everywhere except hardware interfaces.
+- **Zero Ambient Authority** — Pure capability-based security with enforced right propagation.
+- **Memory Safety** — Rust everywhere; userspace pointer validation in all syscalls.
 - **Async-First** — io_uring-style completion queues for all IPC.
-- **AI-Native** — First-class tensor operations and inference syscalls.
-- **Time-Travel Debugging** — Checkpoint and restore process state for deterministic debugging.
+- **AI-Native** — Syscall interface for tensor operations (runtime in progress).
+- **Time-Travel Debugging** — Checkpoint/restore framework defined (implementation in progress).
 
 ## Architecture
 
@@ -202,13 +204,29 @@ Configuration files use YAML format. See `examples/services/` for examples.
 
 Nyx is under active development. Current state:
 
-- [x] Kernel boots and initializes subsystems
-- [x] Capability system implemented
-- [x] IPC ring buffers working
-- [x] Basic process/thread management
-- [ ] Tensor runtime (in progress)
-- [ ] Time-travel debugging (in progress)
-- [ ] Full userspace daemon suite (in progress)
+### Kernel Core (Functional)
+- [x] Kernel boots and initializes all subsystems
+- [x] Capability system with enforced monotonicity (rights can only decrease)
+- [x] Secure syscall interface with userspace pointer validation
+- [x] IPC ring buffers (io_uring style)
+- [x] Process/thread management with proper lifecycle
+- [x] Multi-core scheduler with CFS, deadline scheduling, and work stealing
+- [x] Timer queue with O(log n) operations
+- [x] Memory management (frame allocator, virtual memory, safe user access)
+- [x] Signal delivery framework
+
+### In Progress
+- [ ] Tensor runtime — syscall interface defined, device backends in progress
+- [ ] Time-travel debugging — checkpoint/restore framework defined
+- [ ] CUDA/Metal/NPU device enumeration
+- [ ] Core dump generation
+
+### Userspace (Functional)
+- [x] Init system with service supervision
+- [x] Cipher daemon (secrets management with ChaCha20-Poly1305)
+- [x] Guardian security agent (policy framework)
+- [x] Arachne network agent (firewall, DNS)
+- [x] Comprehensive CI/CD (fmt, clippy, tests, security audit)
 
 See individual component READMEs for detailed status.
 

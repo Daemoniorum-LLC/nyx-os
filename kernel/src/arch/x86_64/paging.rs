@@ -548,6 +548,173 @@ pub fn flush_tlb_all() {
     }
 }
 
+// ============================================================================
+// TLB Shootdown for SMP
+// ============================================================================
+
+use core::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use spin::Mutex;
+
+/// TLB shootdown request structure
+struct TlbShootdownRequest {
+    /// Address to flush (0 = flush all)
+    address: AtomicU64,
+    /// Number of pages to flush (0 = flush all, or count for range)
+    page_count: AtomicU32,
+    /// Number of CPUs that have acknowledged
+    ack_count: AtomicU32,
+    /// Number of CPUs that need to acknowledge
+    target_count: AtomicU32,
+}
+
+/// Global TLB shootdown request (protected by lock for setup, atomics for IPI handling)
+static TLB_SHOOTDOWN: Mutex<TlbShootdownRequest> = Mutex::new(TlbShootdownRequest {
+    address: AtomicU64::new(0),
+    page_count: AtomicU32::new(0),
+    ack_count: AtomicU32::new(0),
+    target_count: AtomicU32::new(0),
+});
+
+/// TLB shootdown IPI vector
+pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xFD;
+
+/// Flush TLB entry on all CPUs (TLB shootdown)
+///
+/// This must be called after unmapping a page that other CPUs might have cached.
+/// It sends an IPI to all other CPUs and waits for them to acknowledge.
+pub fn flush_tlb_page_all(virt: VirtAddr) {
+    let cpu_count = super::smp::cpu_count();
+
+    // Single CPU - no shootdown needed
+    if cpu_count <= 1 {
+        flush_tlb_page(virt);
+        return;
+    }
+
+    // Acquire shootdown lock to serialize requests
+    let request = TLB_SHOOTDOWN.lock();
+
+    // Set up request
+    request.address.store(virt.as_u64(), Ordering::SeqCst);
+    request.page_count.store(1, Ordering::SeqCst);
+    request.ack_count.store(0, Ordering::SeqCst);
+    request.target_count.store(cpu_count - 1, Ordering::SeqCst);
+
+    // Flush local TLB first
+    flush_tlb_page(virt);
+
+    // Send IPI to all other CPUs
+    super::smp::send_ipi_all_excluding_self(TLB_SHOOTDOWN_VECTOR);
+
+    // Wait for all CPUs to acknowledge
+    let target = cpu_count - 1;
+    let mut timeout = 1_000_000u32; // ~1ms timeout at typical IPI latency
+    while request.ack_count.load(Ordering::SeqCst) < target && timeout > 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+    }
+
+    if timeout == 0 {
+        log::warn!("TLB shootdown timeout: only {}/{} CPUs acknowledged",
+            request.ack_count.load(Ordering::SeqCst), target);
+    }
+
+    // Lock is dropped here, allowing next shootdown
+}
+
+/// Flush TLB range on all CPUs
+///
+/// More efficient than calling flush_tlb_page_all multiple times for contiguous ranges.
+pub fn flush_tlb_range_all(start: VirtAddr, page_count: usize) {
+    let cpu_count = super::smp::cpu_count();
+
+    // Single CPU - no shootdown needed
+    if cpu_count <= 1 {
+        for i in 0..page_count {
+            let addr = VirtAddr::new(start.as_u64() + (i as u64 * PAGE_SIZE as u64));
+            flush_tlb_page(addr);
+        }
+        return;
+    }
+
+    // For small ranges, individual flushes may be faster than global shootdown
+    if page_count <= 4 {
+        for i in 0..page_count {
+            let addr = VirtAddr::new(start.as_u64() + (i as u64 * PAGE_SIZE as u64));
+            flush_tlb_page_all(addr);
+        }
+        return;
+    }
+
+    // Large range - do global flush
+    flush_tlb_all_cpus();
+}
+
+/// Flush entire TLB on all CPUs
+pub fn flush_tlb_all_cpus() {
+    let cpu_count = super::smp::cpu_count();
+
+    if cpu_count <= 1 {
+        flush_tlb_all();
+        return;
+    }
+
+    let request = TLB_SHOOTDOWN.lock();
+
+    // address = 0 and page_count = 0 means flush all
+    request.address.store(0, Ordering::SeqCst);
+    request.page_count.store(0, Ordering::SeqCst);
+    request.ack_count.store(0, Ordering::SeqCst);
+    request.target_count.store(cpu_count - 1, Ordering::SeqCst);
+
+    // Flush local TLB
+    flush_tlb_all();
+
+    // Send IPI
+    super::smp::send_ipi_all_excluding_self(TLB_SHOOTDOWN_VECTOR);
+
+    // Wait for acknowledgment
+    let target = cpu_count - 1;
+    let mut timeout = 1_000_000u32;
+    while request.ack_count.load(Ordering::SeqCst) < target && timeout > 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+    }
+}
+
+/// Handle TLB shootdown IPI (called from interrupt handler)
+///
+/// # Safety
+///
+/// Must only be called from the TLB shootdown interrupt handler.
+pub unsafe fn handle_tlb_shootdown_ipi() {
+    // Read request parameters (lock-free read of atomics)
+    let request = TLB_SHOOTDOWN.lock();
+    let address = request.address.load(Ordering::SeqCst);
+    let page_count = request.page_count.load(Ordering::SeqCst);
+
+    // Perform the flush
+    if address == 0 && page_count == 0 {
+        // Flush all
+        flush_tlb_all();
+    } else if page_count == 1 {
+        // Single page
+        flush_tlb_page(VirtAddr::new(address));
+    } else {
+        // Range
+        for i in 0..page_count {
+            let addr = VirtAddr::new(address + (i as u64 * PAGE_SIZE as u64));
+            flush_tlb_page(addr);
+        }
+    }
+
+    // Acknowledge
+    request.ack_count.fetch_add(1, Ordering::SeqCst);
+
+    // Send EOI
+    super::smp::send_eoi();
+}
+
 /// Switch to a new address space
 pub fn switch_address_space(root: PhysAddr) {
     unsafe {
@@ -579,3 +746,257 @@ pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
 pub fn virt_to_phys(virt: VirtAddr) -> PhysAddr {
     PhysAddr::new(virt.as_u64() - PHYS_MAP_BASE)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // PageFlags Tests
+    // =========================================================================
+
+    #[test]
+    fn test_page_flags_individual() {
+        assert_eq!(PageFlags::PRESENT.bits(), 1 << 0);
+        assert_eq!(PageFlags::WRITABLE.bits(), 1 << 1);
+        assert_eq!(PageFlags::USER.bits(), 1 << 2);
+        assert_eq!(PageFlags::NO_EXECUTE.bits(), 1 << 63);
+    }
+
+    #[test]
+    fn test_page_flags_combinations() {
+        let rw = PageFlags::PRESENT | PageFlags::WRITABLE;
+        assert!(rw.contains(PageFlags::PRESENT));
+        assert!(rw.contains(PageFlags::WRITABLE));
+        assert!(!rw.contains(PageFlags::USER));
+    }
+
+    #[test]
+    fn test_page_flags_kernel_ro() {
+        let flags = PageFlags::KERNEL_RO;
+        assert!(flags.contains(PageFlags::PRESENT));
+        assert!(!flags.contains(PageFlags::WRITABLE));
+        assert!(!flags.contains(PageFlags::USER));
+    }
+
+    #[test]
+    fn test_page_flags_user_rw() {
+        let flags = PageFlags::USER_RW;
+        assert!(flags.contains(PageFlags::PRESENT));
+        assert!(flags.contains(PageFlags::WRITABLE));
+        assert!(flags.contains(PageFlags::USER));
+    }
+
+    // =========================================================================
+    // PageTableEntry Tests
+    // =========================================================================
+
+    #[test]
+    fn test_entry_empty() {
+        let entry = PageTableEntry::empty();
+        assert_eq!(entry.0, 0);
+        assert!(!entry.is_present());
+    }
+
+    #[test]
+    fn test_entry_new() {
+        let addr = PhysAddr::new(0x1000);
+        let flags = PageFlags::PRESENT | PageFlags::WRITABLE;
+        let entry = PageTableEntry::new(addr, flags);
+
+        assert!(entry.is_present());
+        assert!(!entry.is_huge());
+        assert_eq!(entry.addr().as_u64(), 0x1000);
+    }
+
+    #[test]
+    fn test_entry_huge_page() {
+        let addr = PhysAddr::new(0x200000); // 2MB aligned
+        let flags = PageFlags::PRESENT | PageFlags::WRITABLE;
+        let entry = PageTableEntry::huge_page(addr, flags);
+
+        assert!(entry.is_present());
+        assert!(entry.is_huge());
+    }
+
+    #[test]
+    fn test_entry_flags() {
+        let addr = PhysAddr::new(0x1000);
+        let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER;
+        let entry = PageTableEntry::new(addr, flags);
+
+        let retrieved = entry.flags();
+        assert!(retrieved.contains(PageFlags::PRESENT));
+        assert!(retrieved.contains(PageFlags::WRITABLE));
+        assert!(retrieved.contains(PageFlags::USER));
+    }
+
+    // =========================================================================
+    // PageTableWalker Tests
+    // =========================================================================
+
+    #[test]
+    fn test_walker_indices() {
+        // Test that indices are correctly extracted from virtual address
+        let virt = VirtAddr::new(0x0000_0000_0020_1000);
+        let indices = PageTableWalker::indices(virt);
+
+        // PML4 index: bits 39-47
+        assert_eq!(indices[0], 0);
+        // PDPT index: bits 30-38
+        assert_eq!(indices[1], 0);
+        // PD index: bits 21-29
+        assert_eq!(indices[2], 1); // 0x200000 >> 21 = 1
+        // PT index: bits 12-20
+        assert_eq!(indices[3], 1); // 0x1000 >> 12 = 1
+    }
+
+    #[test]
+    fn test_walker_indices_high_address() {
+        let virt = VirtAddr::new(0xFFFF_8000_0000_0000);
+        let indices = PageTableWalker::indices(virt);
+
+        // High canonical address
+        assert_eq!(indices[0], 256); // bit 47 set
+    }
+
+    // =========================================================================
+    // MapError Tests
+    // =========================================================================
+
+    #[test]
+    fn test_map_error_variants() {
+        let errors = [
+            MapError::AlreadyMapped,
+            MapError::NotMapped,
+            MapError::OutOfMemory,
+            MapError::MisalignedAddress,
+            MapError::HugePageConflict,
+        ];
+
+        // All variants should be distinct
+        for (i, a) in errors.iter().enumerate() {
+            for (j, b) in errors.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // TLB Shootdown Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tlb_shootdown_vector() {
+        assert_eq!(TLB_SHOOTDOWN_VECTOR, 0xFD);
+    }
+
+    #[test]
+    fn test_shootdown_request_atomics() {
+        // Test that we can manipulate the atomic fields
+        let request = TlbShootdownRequest {
+            address: AtomicU64::new(0),
+            page_count: AtomicU32::new(0),
+            ack_count: AtomicU32::new(0),
+            target_count: AtomicU32::new(0),
+        };
+
+        request.address.store(0x1000, Ordering::SeqCst);
+        assert_eq!(request.address.load(Ordering::SeqCst), 0x1000);
+
+        request.page_count.store(5, Ordering::SeqCst);
+        assert_eq!(request.page_count.load(Ordering::SeqCst), 5);
+
+        request.ack_count.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(request.ack_count.load(Ordering::SeqCst), 1);
+    }
+
+    // =========================================================================
+    // Address Conversion Tests
+    // =========================================================================
+
+    #[test]
+    fn test_phys_to_virt() {
+        let phys = PhysAddr::new(0x1000);
+        let virt = phys_to_virt(phys);
+        assert_eq!(virt.as_u64(), 0x1000 + PHYS_MAP_BASE);
+    }
+
+    #[test]
+    fn test_virt_to_phys() {
+        let virt = VirtAddr::new(PHYS_MAP_BASE + 0x2000);
+        let phys = virt_to_phys(virt);
+        assert_eq!(phys.as_u64(), 0x2000);
+    }
+
+    #[test]
+    fn test_phys_virt_roundtrip() {
+        let original = PhysAddr::new(0x12345000);
+        let virt = phys_to_virt(original);
+        let back = virt_to_phys(virt);
+        assert_eq!(original.as_u64(), back.as_u64());
+    }
+
+    // =========================================================================
+    // Constants Tests
+    // =========================================================================
+
+    #[test]
+    fn test_kernel_base() {
+        assert_eq!(KERNEL_BASE, 0xFFFF_8000_0000_0000);
+    }
+
+    #[test]
+    fn test_phys_map_base() {
+        assert_eq!(PHYS_MAP_BASE, 0xFFFF_8800_0000_0000);
+    }
+
+    #[test]
+    fn test_page_size() {
+        assert_eq!(PAGE_SIZE, 4096);
+    }
+
+    // =========================================================================
+    // PageTable Tests
+    // =========================================================================
+
+    #[test]
+    fn test_page_table_new() {
+        let table = PageTable::new();
+        for entry in table.iter() {
+            assert!(!entry.is_present());
+        }
+    }
+
+    #[test]
+    fn test_page_table_entry_access() {
+        let mut table = PageTable::new();
+
+        let addr = PhysAddr::new(0x2000);
+        let entry = PageTableEntry::new(addr, PageFlags::PRESENT);
+        *table.entry_mut(42) = entry;
+
+        assert!(table.entry(42).is_present());
+        assert_eq!(table.entry(42).addr().as_u64(), 0x2000);
+    }
+
+    #[test]
+    fn test_page_table_zero() {
+        let mut table = PageTable::new();
+
+        // Set some entries
+        *table.entry_mut(0) = PageTableEntry::new(PhysAddr::new(0x1000), PageFlags::PRESENT);
+        *table.entry_mut(100) = PageTableEntry::new(PhysAddr::new(0x2000), PageFlags::PRESENT);
+
+        // Zero the table
+        table.zero();
+
+        // All entries should be empty now
+        for entry in table.iter() {
+            assert!(!entry.is_present());
+        }
+    }
+}
+

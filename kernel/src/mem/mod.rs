@@ -5,14 +5,17 @@
 //! - Physical frame allocator (buddy allocator with NUMA awareness)
 //! - Virtual memory manager (per-process address spaces)
 //! - Kernel heap allocator
+//! - Safe userspace memory access primitives
 //! - Memory tagging for spatial safety (ARM MTE / Intel LAM)
 
 mod frame;
 mod heap;
+pub mod user;
 pub mod virt;
 
 pub use frame::FrameAllocator;
-pub use virt::{AddressSpace, VirtualMemory, Protection};
+pub use user::{copy_from_user, copy_string_from_user, copy_to_user, UserMemError};
+pub use virt::{AddressSpace, Protection, VirtualMemory};
 
 /// Convert physical address to virtual address (identity mapping for kernel)
 #[inline]
