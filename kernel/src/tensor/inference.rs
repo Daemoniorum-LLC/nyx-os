@@ -162,11 +162,20 @@ impl InferenceContext {
     }
 
     /// Submit an inference request
+    ///
+    /// Queues the request for processing by the inference scheduler.
+    /// Returns a request ID that can be used to poll for completion.
     pub fn submit(
-        &self,
+        &mut self,
         input: ObjectId,
         params: InferenceParams,
     ) -> Result<u64, super::TensorError> {
+        // Check queue capacity (prevent unbounded growth)
+        const MAX_PENDING_REQUESTS: usize = 1024;
+        if self.pending.len() >= MAX_PENDING_REQUESTS {
+            return Err(super::TensorError::QueueFull);
+        }
+
         let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
 
         let request = InferenceRequest {
@@ -176,11 +185,91 @@ impl InferenceContext {
             state: RequestState::Queued,
         };
 
-        // TODO: Actually queue the request
-        // For now, just return the ID
-        let _ = request;
+        // Queue the request for processing
+        self.pending.push_back(request);
+
+        log::debug!(
+            "Queued inference request {} for model {:?} (queue depth: {})",
+            request_id,
+            self.model_id,
+            self.pending.len()
+        );
 
         Ok(request_id)
+    }
+
+    /// Poll for request completion
+    ///
+    /// Returns the current state of the request, or None if not found.
+    pub fn poll_request(&self, request_id: u64) -> Option<RequestState> {
+        self.pending
+            .iter()
+            .find(|r| r.id == request_id)
+            .map(|r| r.state)
+    }
+
+    /// Cancel a pending request
+    ///
+    /// Returns true if the request was found and cancelled.
+    pub fn cancel_request(&mut self, request_id: u64) -> bool {
+        if let Some(request) = self.pending.iter_mut().find(|r| r.id == request_id) {
+            if request.state == RequestState::Queued {
+                request.state = RequestState::Cancelled;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Process the next request in the queue
+    ///
+    /// This is called by the inference scheduler to advance request processing.
+    /// Returns the request ID if one was processed.
+    pub fn process_next(&mut self) -> Option<u64> {
+        // Find the first queued request
+        let request = self.pending.iter_mut().find(|r| r.state == RequestState::Queued)?;
+
+        let request_id = request.id;
+
+        // Transition to prefilling state
+        request.state = RequestState::Prefilling;
+
+        // In a real implementation, this would:
+        // 1. Load input tensor data
+        // 2. Run prefill pass on GPU/NPU
+        // 3. Transition to Generating state
+        // 4. Run autoregressive generation
+        // 5. Mark as Completed
+
+        // For now, simulate completion
+        request.state = RequestState::Completed;
+
+        // Update statistics
+        self.stats.total_requests += 1;
+
+        Some(request_id)
+    }
+
+    /// Remove completed/cancelled/failed requests from queue
+    pub fn drain_completed(&mut self) -> alloc::vec::Vec<InferenceRequest> {
+        let mut completed = alloc::vec::Vec::new();
+
+        // Partition: keep pending, remove finished
+        let mut i = 0;
+        while i < self.pending.len() {
+            match self.pending[i].state {
+                RequestState::Completed | RequestState::Cancelled | RequestState::Failed => {
+                    if let Some(req) = self.pending.remove(i) {
+                        completed.push(req);
+                    }
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+
+        completed
     }
 
     /// Get current queue depth

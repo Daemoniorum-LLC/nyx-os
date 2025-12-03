@@ -555,7 +555,13 @@ fn setup_user_stack(
 
 /// Exit the current process
 pub fn exit(exit_code: i32) {
-    let pid = current_process_id().expect("No current process");
+    let pid = match current_process_id() {
+        Some(pid) => pid,
+        None => {
+            log::error!("exit() called with no current process");
+            return;
+        }
+    };
 
     log::info!("Process {} exiting with code {}", pid.0, exit_code);
 

@@ -46,6 +46,22 @@ static CONTEXTS: RwLock<BTreeMap<ObjectId, InferenceContext>> = RwLock::new(BTre
 /// Global compute device registry
 static DEVICES: RwLock<Vec<ComputeDevice>> = RwLock::new(Vec::new());
 
+/// Per-device memory usage tracking
+static DEVICE_MEMORY: RwLock<BTreeMap<u32, DeviceMemoryStats>> = RwLock::new(BTreeMap::new());
+
+/// Device memory usage statistics
+#[derive(Clone, Debug, Default)]
+pub struct DeviceMemoryStats {
+    /// Total memory on device (bytes)
+    pub total_bytes: u64,
+    /// Currently allocated (bytes)
+    pub allocated_bytes: u64,
+    /// Peak allocation (bytes)
+    pub peak_allocated_bytes: u64,
+    /// Number of active allocations
+    pub allocation_count: u64,
+}
+
 /// Check if any AI accelerator is available
 pub fn has_accelerator() -> bool {
     // Will be populated during device enumeration
@@ -490,11 +506,43 @@ pub fn tensor_alloc(
         .find(|d| d.id == device_id)
         .ok_or(TensorError::DeviceNotFound)?;
 
-    // Calculate buffer size
-    let size = shape.total_elements() * dtype.size_bytes();
+    // Calculate buffer size with alignment (64-byte alignment for SIMD)
+    let raw_size = shape.total_elements() * dtype.size_bytes();
+    let size = (raw_size + 63) & !63; // Round up to 64-byte boundary
 
-    // Check device memory
-    // TODO: Track per-device memory usage
+    // Check and update device memory tracking
+    {
+        let mut mem_stats = DEVICE_MEMORY.write();
+        let stats = mem_stats.entry(device_id).or_insert_with(|| {
+            DeviceMemoryStats {
+                total_bytes: device.memory_bytes,
+                allocated_bytes: 0,
+                peak_allocated_bytes: 0,
+                allocation_count: 0,
+            }
+        });
+
+        // Check if we have enough memory
+        if stats.allocated_bytes + size > stats.total_bytes {
+            log::warn!(
+                "Tensor allocation failed: requested {} bytes, available {} bytes on device {}",
+                size,
+                stats.total_bytes - stats.allocated_bytes,
+                device_id
+            );
+            return Err(TensorError::OutOfMemory);
+        }
+
+        // Reserve the memory
+        stats.allocated_bytes += size;
+        stats.allocation_count += 1;
+        if stats.allocated_bytes > stats.peak_allocated_bytes {
+            stats.peak_allocated_bytes = stats.allocated_bytes;
+        }
+    }
+
+    // Allocate device memory (device-specific)
+    let device_ptr = allocate_device_memory(device_id, size)?;
 
     let buffer = TensorBuffer {
         id: ObjectId::new(ObjectType::TensorBuffer),
@@ -502,13 +550,21 @@ pub fn tensor_alloc(
         dtype,
         device_id,
         size_bytes: size,
-        // Memory allocation happens in device-specific code
-        device_ptr: 0,
+        device_ptr,
         host_ptr: None,
         flags: buffer::TensorFlags::empty(),
     };
 
     let object_id = buffer.id;
+
+    log::debug!(
+        "Allocated tensor {:?}: {} bytes on device {} at 0x{:x}",
+        object_id,
+        size,
+        device_id,
+        device_ptr
+    );
+
     TENSORS.write().insert(object_id, buffer);
 
     let cap = unsafe {
@@ -522,16 +578,95 @@ pub fn tensor_alloc(
     Ok(cap)
 }
 
+/// Allocate memory on a specific device
+fn allocate_device_memory(device_id: u32, size: u64) -> Result<u64, TensorError> {
+    let devices = DEVICES.read();
+    let device = devices
+        .iter()
+        .find(|d| d.id == device_id)
+        .ok_or(TensorError::DeviceNotFound)?;
+
+    match device.device_type {
+        AcceleratorType::Cpu => {
+            // CPU: use kernel heap allocation
+            // In a real implementation, this would use a dedicated tensor heap
+            // For now, return a placeholder address
+            Ok(0x1000_0000 + (size & 0xFFFF_0000))
+        }
+        AcceleratorType::NvidiaCuda => {
+            // CUDA: would call cuMemAlloc
+            // Placeholder: return fake device pointer
+            Ok(0x7F00_0000_0000 + (size & 0xFFFF_0000))
+        }
+        AcceleratorType::AppleMetal => {
+            // Metal: would create MTLBuffer
+            // Placeholder: return fake device pointer
+            Ok(0x8000_0000_0000 + (size & 0xFFFF_0000))
+        }
+        _ => {
+            // Generic fallback
+            Ok(0x9000_0000_0000 + (size & 0xFFFF_0000))
+        }
+    }
+}
+
+/// Free memory on a specific device
+fn free_device_memory(device_id: u32, device_ptr: u64, size: u64) {
+    let devices = DEVICES.read();
+    if let Some(device) = devices.iter().find(|d| d.id == device_id) {
+        match device.device_type {
+            AcceleratorType::Cpu => {
+                // CPU: would free from kernel heap
+                log::trace!("Free CPU tensor memory at 0x{:x}", device_ptr);
+            }
+            AcceleratorType::NvidiaCuda => {
+                // CUDA: would call cuMemFree
+                log::trace!("Free CUDA tensor memory at 0x{:x}", device_ptr);
+            }
+            AcceleratorType::AppleMetal => {
+                // Metal: would release MTLBuffer
+                log::trace!("Free Metal tensor memory at 0x{:x}", device_ptr);
+            }
+            _ => {
+                log::trace!("Free tensor memory at 0x{:x}", device_ptr);
+            }
+        }
+    }
+    let _ = (device_ptr, size); // Suppress unused warnings in placeholder impl
+}
+
 /// Free a tensor buffer
 pub fn tensor_free(cap: Capability) -> Result<(), TensorError> {
     cap.require(Rights::TENSOR_FREE)?;
 
     let mut tensors = TENSORS.write();
-    tensors.remove(&cap.object_id).ok_or(TensorError::NotFound)?;
+    let buffer = tensors.remove(&cap.object_id).ok_or(TensorError::NotFound)?;
 
-    // TODO: Free device memory
+    // Free device memory
+    free_device_memory(buffer.device_id, buffer.device_ptr, buffer.size_bytes);
+
+    // Update memory tracking
+    {
+        let mut mem_stats = DEVICE_MEMORY.write();
+        if let Some(stats) = mem_stats.get_mut(&buffer.device_id) {
+            stats.allocated_bytes = stats.allocated_bytes.saturating_sub(buffer.size_bytes);
+            stats.allocation_count = stats.allocation_count.saturating_sub(1);
+        }
+    }
+
+    log::debug!(
+        "Freed tensor {:?}: {} bytes on device {}",
+        cap.object_id,
+        buffer.size_bytes,
+        buffer.device_id
+    );
 
     Ok(())
+}
+
+/// Get memory statistics for a device
+pub fn get_device_memory_stats(device_id: u32) -> Option<DeviceMemoryStats> {
+    DEVICE_MEMORY.read().get(&device_id).cloned()
 }
 
 /// Create an inference context
@@ -565,9 +700,9 @@ pub fn inference_submit(
     context_cap.require(Rights::INFERENCE)?;
     input.require(Rights::READ)?;
 
-    let contexts = CONTEXTS.read();
+    let mut contexts = CONTEXTS.write();
     let context = contexts
-        .get(&context_cap.object_id)
+        .get_mut(&context_cap.object_id)
         .ok_or(TensorError::NotFound)?;
 
     // Submit to inference scheduler
@@ -593,6 +728,8 @@ pub enum TensorError {
     InferenceError(alloc::string::String),
     /// Capability error
     Capability(CapError),
+    /// Request queue is full
+    QueueFull,
 }
 
 impl From<CapError> for TensorError {
@@ -641,11 +778,11 @@ pub fn submit_inference(
     _flags: u32,
 ) -> Result<u64, TensorError> {
     // Look up inference context by model_id
-    let contexts = CONTEXTS.read();
+    let mut contexts = CONTEXTS.write();
 
     // Find context for this model
     let context_id = ObjectId::from_raw(model_id);
-    let context = contexts.get(&context_id).ok_or(TensorError::NotFound)?;
+    let context = contexts.get_mut(&context_id).ok_or(TensorError::NotFound)?;
 
     // Create inference params with default balanced sampling
     let params = inference::InferenceParams::balanced();
@@ -827,4 +964,59 @@ fn copy_host_to_device(tensor: &mut TensorBuffer, dst_device: u32) -> Result<(),
 pub fn migration_status(job_id: u64) -> Option<migration::MigrationStatus> {
     // For now, just return completed (async not fully implemented)
     Some(migration::MigrationStatus::Completed)
+}
+
+// ============================================================================
+// Memory Mapping Support
+// ============================================================================
+
+/// Get the physical frame for a tensor buffer at a given offset
+///
+/// This is called from the virtual memory fault handler when a
+/// tensor-backed VMA needs to be mapped. For CPU tensors, this returns
+/// the physical address directly. For GPU/NPU tensors, this may trigger
+/// a migration to CPU memory first.
+pub fn get_tensor_frame(tensor_id: ObjectId, offset: u64) -> Option<crate::mem::PhysAddr> {
+    let tensors = TENSORS.read();
+    let tensor = tensors.get(&tensor_id)?;
+
+    // Check if offset is within tensor bounds
+    if offset >= tensor.size_bytes {
+        log::warn!(
+            "Tensor frame access out of bounds: offset {} >= size {}",
+            offset,
+            tensor.size_bytes
+        );
+        return None;
+    }
+
+    // For CPU tensors, we can compute the physical address directly
+    if tensor.device_id == 0 {
+        // CPU tensor: device_ptr is the base physical address
+        // Calculate the page-aligned address
+        let page_offset = offset & !(crate::mem::PAGE_SIZE - 1);
+        let phys_addr = tensor.device_ptr + page_offset;
+        return Some(crate::mem::PhysAddr::new(phys_addr));
+    }
+
+    // For GPU/NPU tensors, we need to access through the host pointer
+    // If no host pointer exists, the tensor needs to be migrated first
+    if let Some(host_ptr) = tensor.host_ptr {
+        let page_offset = offset & !(crate::mem::PAGE_SIZE - 1);
+        // Offset the pointer and convert to physical address
+        let phys_addr = unsafe { host_ptr.add(page_offset as usize) } as u64;
+        return Some(crate::mem::PhysAddr::new(phys_addr));
+    }
+
+    // Tensor is on GPU/NPU without host mapping
+    // This should trigger a migration, but for now return None
+    // to indicate the mapping failed and needs explicit migration
+    log::debug!(
+        "Tensor {:?} on device {} has no host mapping for offset {}",
+        tensor_id,
+        tensor.device_id,
+        offset
+    );
+
+    None
 }

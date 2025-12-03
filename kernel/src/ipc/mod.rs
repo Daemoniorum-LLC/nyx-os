@@ -19,11 +19,13 @@ mod ring;
 mod message;
 mod endpoint;
 mod notification;
+pub mod shm;
 
 pub use ring::{IpcRing, SqEntry, CqEntry, IpcOpcode, SqFlags, CqFlags, ring_flags};
 pub use message::{Message, MessageHeader, MemoryGrant};
 pub use endpoint::Endpoint;
 pub use notification::Notification;
+pub use shm::{SharedRegion, SharedFlags, ShmError};
 
 use crate::cap::{Capability, CapError, ObjectId, ObjectType, Rights};
 use spin::RwLock;

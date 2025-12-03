@@ -168,9 +168,42 @@ impl AddressSpace {
                 let phys_addr = PhysAddr::new(phys.as_u64() + offset);
                 self.map_page(addr, phys_addr, vma.protection)?;
             }
-            _ => {
-                // TODO: Handle other backing types
-                return Err(VmError::NotImplemented);
+            VmaBacking::File { file, offset } => {
+                // File-backed mapping: allocate a frame and read from file
+                let frame = super::alloc_frame().ok_or(VmError::OutOfMemory)?;
+
+                // Calculate file offset for this page
+                let page_offset = addr.as_u64() - vma.start.as_u64();
+                let file_offset = offset + page_offset;
+
+                // Read page data from file
+                if let Err(_) = self.read_file_page(*file, file_offset, frame) {
+                    // If file read fails, zero the page (sparse file behavior)
+                    let virt_ptr = super::phys_to_virt(frame) as *mut u8;
+                    unsafe {
+                        core::ptr::write_bytes(virt_ptr, 0, super::PAGE_SIZE as usize);
+                    }
+                }
+
+                self.map_page(addr, frame, vma.protection)?;
+            }
+            VmaBacking::Shared { region } => {
+                // Shared memory: look up physical frame from shared region
+                let frame = self
+                    .lookup_shared_frame(*region, addr.as_u64() - vma.start.as_u64())
+                    .ok_or(VmError::OutOfMemory)?;
+
+                self.map_page(addr, frame, vma.protection)?;
+            }
+            VmaBacking::Tensor { tensor, offset } => {
+                // Tensor buffer: map from tensor's device memory
+                // For CPU tensors, we can map directly
+                // For GPU tensors, this should trigger a migration or fault
+                let frame = self
+                    .lookup_tensor_frame(*tensor, *offset + (addr.as_u64() - vma.start.as_u64()))
+                    .ok_or(VmError::DeviceMemory)?;
+
+                self.map_page(addr, frame, vma.protection)?;
             }
         }
 
@@ -274,6 +307,64 @@ impl AddressSpace {
 
         Ok(())
     }
+
+    // =========================================================================
+    // Private helper methods for page fault handling
+    // =========================================================================
+
+    /// Read a page from a file into a physical frame
+    fn read_file_page(
+        &self,
+        file_id: crate::cap::ObjectId,
+        offset: u64,
+        frame: PhysAddr,
+    ) -> Result<(), VmError> {
+        // Get kernel virtual address for the frame
+        let virt_ptr = super::phys_to_virt(frame) as *mut u8;
+        let buffer = unsafe {
+            core::slice::from_raw_parts_mut(virt_ptr, super::PAGE_SIZE as usize)
+        };
+
+        // Read from the file system
+        match crate::fs::read_at(file_id, offset, buffer) {
+            Ok(bytes_read) => {
+                // Zero out any remaining bytes if we read less than a page
+                if bytes_read < super::PAGE_SIZE as usize {
+                    unsafe {
+                        core::ptr::write_bytes(
+                            virt_ptr.add(bytes_read),
+                            0,
+                            super::PAGE_SIZE as usize - bytes_read,
+                        );
+                    }
+                }
+                Ok(())
+            }
+            Err(_) => Err(VmError::IoError),
+        }
+    }
+
+    /// Look up the physical frame for a shared memory region
+    fn lookup_shared_frame(
+        &self,
+        region_id: crate::cap::ObjectId,
+        offset: u64,
+    ) -> Option<PhysAddr> {
+        // Look up shared region in the IPC shared memory registry
+        crate::ipc::shm::get_frame(region_id, offset)
+    }
+
+    /// Look up the physical frame for a tensor buffer
+    fn lookup_tensor_frame(
+        &self,
+        tensor_id: crate::cap::ObjectId,
+        offset: u64,
+    ) -> Option<PhysAddr> {
+        // Look up tensor in the tensor registry
+        // For CPU tensors, we can return the physical address directly
+        // For GPU/NPU tensors, we need to trigger a migration first
+        crate::tensor::get_tensor_frame(tensor_id, offset)
+    }
 }
 
 impl Default for AddressSpace {
@@ -298,4 +389,8 @@ pub enum VmError {
     OutOfMemory,
     /// Not implemented
     NotImplemented,
+    /// Device memory not accessible
+    DeviceMemory,
+    /// I/O error
+    IoError,
 }

@@ -507,6 +507,29 @@ pub fn receive_packet(interface_id: InterfaceId, data: &[u8]) -> Result<(), NetE
     Ok(())
 }
 
+/// Per-interface transmit queue
+static TX_QUEUES: RwLock<BTreeMap<InterfaceId, TxQueue>> = RwLock::new(BTreeMap::new());
+
+/// Transmit queue for an interface
+struct TxQueue {
+    /// Pending frames to transmit
+    frames: alloc::collections::VecDeque<Vec<u8>>,
+    /// Driver process waiting for frames
+    driver_pid: Option<ProcessId>,
+    /// Maximum queue depth
+    max_depth: usize,
+}
+
+impl TxQueue {
+    fn new() -> Self {
+        Self {
+            frames: alloc::collections::VecDeque::new(),
+            driver_pid: None,
+            max_depth: 256,
+        }
+    }
+}
+
 /// Send a packet through a network interface
 pub fn send_packet(
     interface_id: InterfaceId,
@@ -526,15 +549,95 @@ pub fn send_packet(
 
     // Build Ethernet frame
     let frame = ethernet::EthernetFrame::build(iface.mac, dest_mac, ethertype, payload);
+    let frame_len = frame.len();
+
+    // Queue frame for transmission
+    let driver_pid = {
+        let mut queues = TX_QUEUES.write();
+        let queue = queues.entry(interface_id).or_insert_with(TxQueue::new);
+
+        // Check queue depth
+        if queue.frames.len() >= queue.max_depth {
+            return Err(NetError::WouldBlock);
+        }
+
+        queue.frames.push_back(frame);
+        queue.driver_pid
+    };
 
     // Update statistics
-    if let Some(mut iface) = INTERFACES.write().get_mut(&interface_id) {
+    if let Some(iface) = INTERFACES.write().get_mut(&interface_id) {
         iface.statistics.tx_packets += 1;
-        iface.statistics.tx_bytes += frame.len() as u64;
+        iface.statistics.tx_bytes += frame_len as u64;
     }
 
-    // TODO: Send to driver
-    log::trace!("Sending {} bytes to {}", frame.len(), dest_mac);
+    // Notify driver if registered
+    if let Some(pid) = driver_pid {
+        notify_driver(pid, interface_id);
+    }
+
+    log::trace!(
+        "Queued {} bytes for transmission to {} on {:?}",
+        frame_len,
+        dest_mac,
+        interface_id
+    );
 
     Ok(())
+}
+
+/// Driver notification registry (driver_pid -> notification_id)
+static DRIVER_NOTIFICATIONS: RwLock<BTreeMap<ProcessId, ObjectId>> = RwLock::new(BTreeMap::new());
+
+/// Register a driver process for an interface
+pub fn register_driver(interface_id: InterfaceId, driver_pid: ProcessId) -> Result<(), NetError> {
+    let mut queues = TX_QUEUES.write();
+    let queue = queues.entry(interface_id).or_insert_with(TxQueue::new);
+    queue.driver_pid = Some(driver_pid);
+
+    log::debug!(
+        "Registered driver {:?} for interface {:?}",
+        driver_pid,
+        interface_id
+    );
+
+    Ok(())
+}
+
+/// Register a notification object for a driver
+pub fn register_driver_notification(driver_pid: ProcessId, notification_id: ObjectId) {
+    DRIVER_NOTIFICATIONS.write().insert(driver_pid, notification_id);
+}
+
+/// Dequeue a frame for transmission (called by driver)
+pub fn dequeue_tx_frame(interface_id: InterfaceId) -> Option<Vec<u8>> {
+    TX_QUEUES
+        .write()
+        .get_mut(&interface_id)
+        .and_then(|q| q.frames.pop_front())
+}
+
+/// Get the number of pending frames for an interface
+pub fn pending_tx_frames(interface_id: InterfaceId) -> usize {
+    TX_QUEUES
+        .read()
+        .get(&interface_id)
+        .map(|q| q.frames.len())
+        .unwrap_or(0)
+}
+
+/// Notify driver of pending work
+fn notify_driver(driver_pid: ProcessId, interface_id: InterfaceId) {
+    // Signal the driver that there's work to do
+    let signal_bits = 1u64 << (interface_id.0 & 63);
+
+    if let Some(&notif_id) = DRIVER_NOTIFICATIONS.read().get(&driver_pid) {
+        // Use the IPC notification system
+        let _ = crate::ipc::notification::signal(notif_id, signal_bits);
+        log::trace!(
+            "Notified driver {:?} about interface {:?}",
+            driver_pid,
+            interface_id
+        );
+    }
 }

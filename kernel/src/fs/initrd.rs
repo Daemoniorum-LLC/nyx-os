@@ -318,6 +318,31 @@ impl InitrdFs {
         Ok(entry.data.clone())
     }
 
+    /// Read file at specific offset into buffer
+    ///
+    /// Used for memory-mapped file access.
+    pub fn read_at(&self, path: &str, offset: u64, buffer: &mut [u8]) -> Result<usize, FsError> {
+        let entry = self.entries.get(path).ok_or(FsError::NotFound)?;
+
+        if entry.file_type == FileType::Directory {
+            return Err(FsError::IsDirectory);
+        }
+
+        // Calculate how much we can read
+        let offset = offset as usize;
+        if offset >= entry.data.len() {
+            // Reading past EOF
+            return Ok(0);
+        }
+
+        let available = entry.data.len() - offset;
+        let to_read = buffer.len().min(available);
+
+        buffer[..to_read].copy_from_slice(&entry.data[offset..offset + to_read]);
+
+        Ok(to_read)
+    }
+
     /// Get file metadata
     pub fn stat(&self, path: &str) -> Result<FileStat, FsError> {
         let entry = self.entries.get(path).ok_or(FsError::NotFound)?;
