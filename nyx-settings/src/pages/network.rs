@@ -222,3 +222,182 @@ impl NetworkPage {
         .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NETWORK INFO TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_network_info_creation() {
+        let info = NetworkInfo {
+            ssid: "TestNetwork".to_string(),
+            signal: 85,
+            secured: true,
+        };
+        assert_eq!(info.ssid, "TestNetwork");
+        assert_eq!(info.signal, 85);
+        assert!(info.secured);
+    }
+
+    #[test]
+    fn test_network_info_clone() {
+        let info = NetworkInfo {
+            ssid: "Test".to_string(),
+            signal: 50,
+            secured: false,
+        };
+        let cloned = info.clone();
+        assert_eq!(info.ssid, cloned.ssid);
+        assert_eq!(info.signal, cloned.signal);
+        assert_eq!(info.secured, cloned.secured);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NETWORK PAGE NEW TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_network_page_new() {
+        let page = NetworkPage::new();
+        assert!(page.wifi_enabled);
+        assert!(page.current_network.is_some());
+        assert!(!page.available_networks.is_empty());
+    }
+
+    #[test]
+    fn test_network_page_new_connected_to_nyx() {
+        let page = NetworkPage::new();
+        assert_eq!(page.current_network.as_deref(), Some("Nyx-Network"));
+    }
+
+    #[test]
+    fn test_network_page_new_signal_strength() {
+        let page = NetworkPage::new();
+        assert_eq!(page.signal_strength, 75);
+    }
+
+    #[test]
+    fn test_network_page_new_has_networks() {
+        let page = NetworkPage::new();
+        assert_eq!(page.available_networks.len(), 3);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NETWORK PAGE DEFAULT TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_network_page_default() {
+        let page = NetworkPage::default();
+        assert!(!page.wifi_enabled);
+        assert!(page.current_network.is_none());
+        assert!(page.available_networks.is_empty());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NETWORK PAGE UPDATE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_toggle_wifi_off() {
+        let mut page = NetworkPage::new();
+        assert!(page.wifi_enabled);
+        assert!(page.current_network.is_some());
+
+        page.update(NetworkMessage::ToggleWifi(false));
+
+        assert!(!page.wifi_enabled);
+        assert!(page.current_network.is_none());
+    }
+
+    #[test]
+    fn test_toggle_wifi_on() {
+        let mut page = NetworkPage::default();
+        assert!(!page.wifi_enabled);
+
+        page.update(NetworkMessage::ToggleWifi(true));
+
+        assert!(page.wifi_enabled);
+    }
+
+    #[test]
+    fn test_connect_to_network() {
+        let mut page = NetworkPage::new();
+        page.update(NetworkMessage::Disconnect);
+        assert!(page.current_network.is_none());
+
+        page.update(NetworkMessage::Connect("NewNetwork".to_string()));
+
+        assert_eq!(page.current_network.as_deref(), Some("NewNetwork"));
+    }
+
+    #[test]
+    fn test_disconnect() {
+        let mut page = NetworkPage::new();
+        assert!(page.current_network.is_some());
+
+        page.update(NetworkMessage::Disconnect);
+
+        assert!(page.current_network.is_none());
+    }
+
+    #[test]
+    fn test_refresh_preserves_state() {
+        let mut page = NetworkPage::new();
+        let network_count = page.available_networks.len();
+
+        page.update(NetworkMessage::Refresh);
+
+        // Refresh should not change state in this implementation
+        assert_eq!(page.available_networks.len(), network_count);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NETWORK MESSAGE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_network_message_clone() {
+        let msg = NetworkMessage::Connect("Test".to_string());
+        let cloned = msg.clone();
+        if let NetworkMessage::Connect(ssid) = cloned {
+            assert_eq!(ssid, "Test");
+        } else {
+            panic!("Expected Connect");
+        }
+    }
+
+    #[test]
+    fn test_network_message_debug() {
+        let msg = NetworkMessage::ToggleWifi(true);
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("ToggleWifi"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NETWORK PAGE INITIAL STATE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_initial_networks_have_varied_signals() {
+        let page = NetworkPage::new();
+        let signals: Vec<u8> = page.available_networks.iter().map(|n| n.signal).collect();
+        // Should have different signal strengths
+        let unique: std::collections::HashSet<u8> = signals.into_iter().collect();
+        assert!(unique.len() >= 2);
+    }
+
+    #[test]
+    fn test_initial_networks_mix_of_secured() {
+        let page = NetworkPage::new();
+        let secured_count = page.available_networks.iter().filter(|n| n.secured).count();
+        let open_count = page.available_networks.iter().filter(|n| !n.secured).count();
+        // Should have both types
+        assert!(secured_count >= 1);
+        assert!(open_count >= 1);
+    }
+}

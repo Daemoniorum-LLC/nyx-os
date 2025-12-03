@@ -186,3 +186,187 @@ impl WorkspaceManager {
         self.workspaces.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workspace_new() {
+        let ws = Workspace::new(1, "Test");
+        assert_eq!(ws.id, 1);
+        assert_eq!(ws.name, "Test");
+        assert!(!ws.active);
+        assert_eq!(ws.window_count, 0);
+        assert!(ws.thumbnail.is_none());
+    }
+
+    #[test]
+    fn test_workspace_manager_new() {
+        let manager = WorkspaceManager::new();
+        assert_eq!(manager.count(), 4);
+        assert_eq!(manager.active_id(), 1);
+    }
+
+    #[test]
+    fn test_workspace_manager_default() {
+        let manager = WorkspaceManager::default();
+        assert_eq!(manager.count(), 4);
+    }
+
+    #[test]
+    fn test_workspace_manager_active() {
+        let manager = WorkspaceManager::new();
+        let active = manager.active().unwrap();
+        assert_eq!(active.id, 1);
+        assert!(active.active);
+    }
+
+    #[test]
+    fn test_workspace_manager_set_active() {
+        let mut manager = WorkspaceManager::new();
+        manager.set_active(2);
+        assert_eq!(manager.active_id(), 2);
+
+        let active = manager.active().unwrap();
+        assert_eq!(active.id, 2);
+        assert!(active.active);
+
+        // Previous workspace should not be active
+        let ws1 = manager.workspaces().iter().find(|w| w.id == 1).unwrap();
+        assert!(!ws1.active);
+    }
+
+    #[test]
+    fn test_workspace_manager_next() {
+        let mut manager = WorkspaceManager::new();
+        assert_eq!(manager.active_id(), 1);
+
+        manager.next();
+        assert_eq!(manager.active_id(), 2);
+
+        manager.next();
+        assert_eq!(manager.active_id(), 3);
+
+        manager.next();
+        assert_eq!(manager.active_id(), 4);
+
+        // Should wrap around
+        manager.next();
+        assert_eq!(manager.active_id(), 1);
+    }
+
+    #[test]
+    fn test_workspace_manager_previous() {
+        let mut manager = WorkspaceManager::new();
+        assert_eq!(manager.active_id(), 1);
+
+        // Should wrap around to last
+        manager.previous();
+        assert_eq!(manager.active_id(), 4);
+
+        manager.previous();
+        assert_eq!(manager.active_id(), 3);
+
+        manager.previous();
+        assert_eq!(manager.active_id(), 2);
+
+        manager.previous();
+        assert_eq!(manager.active_id(), 1);
+    }
+
+    #[test]
+    fn test_workspace_manager_create() {
+        let mut manager = WorkspaceManager::new();
+        let initial_count = manager.count();
+
+        let new_id = manager.create("New Workspace");
+        assert_eq!(manager.count(), initial_count + 1);
+        assert!(new_id > 4); // Should be greater than existing IDs
+
+        let ws = manager.workspaces().iter().find(|w| w.id == new_id).unwrap();
+        assert_eq!(ws.name, "New Workspace");
+    }
+
+    #[test]
+    fn test_workspace_manager_remove() {
+        let mut manager = WorkspaceManager::new();
+        let initial_count = manager.count();
+
+        let removed = manager.remove(2);
+        assert!(removed);
+        assert_eq!(manager.count(), initial_count - 1);
+
+        // Workspace 2 should no longer exist
+        assert!(manager.workspaces().iter().find(|w| w.id == 2).is_none());
+    }
+
+    #[test]
+    fn test_workspace_manager_remove_active() {
+        let mut manager = WorkspaceManager::new();
+        manager.set_active(2);
+        assert_eq!(manager.active_id(), 2);
+
+        manager.remove(2);
+
+        // Should switch to another workspace
+        assert_ne!(manager.active_id(), 2);
+    }
+
+    #[test]
+    fn test_workspace_manager_remove_last_fails() {
+        let mut manager = WorkspaceManager::new();
+
+        // Remove all but one
+        manager.remove(2);
+        manager.remove(3);
+        manager.remove(4);
+        assert_eq!(manager.count(), 1);
+
+        // Should not be able to remove the last one
+        let removed = manager.remove(1);
+        assert!(!removed);
+        assert_eq!(manager.count(), 1);
+    }
+
+    #[test]
+    fn test_workspace_manager_remove_nonexistent() {
+        let mut manager = WorkspaceManager::new();
+        let removed = manager.remove(999);
+        assert!(!removed);
+    }
+
+    #[test]
+    fn test_workspace_manager_rename() {
+        let mut manager = WorkspaceManager::new();
+        manager.rename(1, "Renamed");
+
+        let ws = manager.workspaces().iter().find(|w| w.id == 1).unwrap();
+        assert_eq!(ws.name, "Renamed");
+    }
+
+    #[test]
+    fn test_workspace_manager_rename_nonexistent() {
+        let mut manager = WorkspaceManager::new();
+        // Should not panic
+        manager.rename(999, "Renamed");
+    }
+
+    #[test]
+    fn test_workspace_manager_set_window_count() {
+        let mut manager = WorkspaceManager::new();
+        manager.set_window_count(1, 5);
+
+        let ws = manager.workspaces().iter().find(|w| w.id == 1).unwrap();
+        assert_eq!(ws.window_count, 5);
+    }
+
+    #[test]
+    fn test_workspace_serialization() {
+        let ws = Workspace::new(1, "Test");
+        let json = serde_json::to_string(&ws).unwrap();
+        let parsed: Workspace = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, ws.id);
+        assert_eq!(parsed.name, ws.name);
+    }
+}

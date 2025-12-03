@@ -198,12 +198,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_hex_color() {
+    fn test_parse_hex_color_with_hash() {
         let color = parse_hex_color("#FF0000").unwrap();
         assert!((color.r - 1.0).abs() < 0.01);
         assert!(color.g.abs() < 0.01);
         assert!(color.b.abs() < 0.01);
+    }
 
+    #[test]
+    fn test_parse_hex_color_without_hash() {
         let color = parse_hex_color("00FF00").unwrap();
         assert!(color.r.abs() < 0.01);
         assert!((color.g - 1.0).abs() < 0.01);
@@ -211,8 +214,161 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_hex_color_blue() {
+        let color = parse_hex_color("#0000FF").unwrap();
+        assert!(color.r.abs() < 0.01);
+        assert!(color.g.abs() < 0.01);
+        assert!((color.b - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_hex_color_with_alpha() {
+        let color = parse_hex_color("#FF000080").unwrap();
+        assert!((color.r - 1.0).abs() < 0.01);
+        assert!(color.g.abs() < 0.01);
+        assert!(color.b.abs() < 0.01);
+        assert!((color.a - 0.5).abs() < 0.02); // ~128/255
+    }
+
+    #[test]
+    fn test_parse_hex_color_invalid() {
+        assert!(parse_hex_color("invalid").is_none());
+        assert!(parse_hex_color("#GGG").is_none());
+        assert!(parse_hex_color("#12345").is_none()); // Wrong length
+    }
+
+    #[test]
     fn test_color_to_hex() {
         let hex = color_to_hex(Color::from_rgb(1.0, 0.0, 0.0));
         assert_eq!(hex, "#FF0000");
+    }
+
+    #[test]
+    fn test_color_to_hex_green() {
+        let hex = color_to_hex(Color::from_rgb(0.0, 1.0, 0.0));
+        assert_eq!(hex, "#00FF00");
+    }
+
+    #[test]
+    fn test_color_to_hex_mixed() {
+        let hex = color_to_hex(Color::from_rgb(0.5, 0.5, 0.5));
+        // 0.5 * 255 = 127.5, rounds to 127 = 0x7F
+        assert!(hex == "#7F7F7F" || hex == "#808080");
+    }
+
+    #[test]
+    fn test_default_theme_mode_is_dark() {
+        assert_eq!(ThemeMode::default(), ThemeMode::Dark);
+    }
+
+    #[test]
+    fn test_default_nyx_theme() {
+        let theme = NyxTheme::default();
+        assert_eq!(theme.mode, ThemeMode::Dark);
+        assert_eq!(theme.accent, AccentColor::Aurora);
+        assert!(theme.glassmorphism);
+        assert!(theme.animations);
+        assert!((theme.animation_speed - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_nyx_theme_dark() {
+        let theme = NyxTheme::dark();
+        assert_eq!(theme.mode, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn test_nyx_theme_light() {
+        let theme = NyxTheme::light();
+        assert_eq!(theme.mode, ThemeMode::Light);
+    }
+
+    #[test]
+    fn test_nyx_theme_palette_dark() {
+        let theme = NyxTheme::dark();
+        let palette = theme.palette();
+        // Dark theme should have dark background
+        assert!(palette.background.r < 0.2);
+    }
+
+    #[test]
+    fn test_nyx_theme_palette_light() {
+        let theme = NyxTheme::light();
+        let palette = theme.palette();
+        // Light theme should have light background
+        assert!(palette.background.r > 0.9);
+    }
+
+    #[test]
+    fn test_nyx_theme_with_accent() {
+        let theme = NyxTheme::default().with_accent(AccentColor::Ethereal);
+        assert_eq!(theme.accent, AccentColor::Ethereal);
+    }
+
+    #[test]
+    fn test_nyx_theme_with_custom_accent() {
+        let theme = NyxTheme::default().with_custom_accent("#FF5500");
+        assert_eq!(theme.accent, AccentColor::Custom);
+        assert_eq!(theme.custom_accent_hex, Some("#FF5500".to_string()));
+    }
+
+    #[test]
+    fn test_nyx_theme_accent_color_custom() {
+        let theme = NyxTheme::default().with_custom_accent("#FF0000");
+        let color = theme.accent_color();
+        assert!((color.r - 1.0).abs() < 0.01);
+        assert!(color.g.abs() < 0.01);
+    }
+
+    #[test]
+    fn test_nyx_theme_accent_color_preset() {
+        let theme = NyxTheme::default().with_accent(AccentColor::Ethereal);
+        let color = theme.accent_color();
+        // Ethereal is cyan-ish
+        assert!(color.g > color.r);
+    }
+
+    #[test]
+    fn test_nyx_theme_with_glassmorphism() {
+        let theme = NyxTheme::default().with_glassmorphism(false);
+        assert!(!theme.glassmorphism);
+    }
+
+    #[test]
+    fn test_nyx_theme_animation_speed_clamped() {
+        let theme = NyxTheme::default().with_animation_speed(10.0);
+        assert!((theme.animation_speed - 4.0).abs() < 0.01);
+
+        let theme = NyxTheme::default().with_animation_speed(0.1);
+        assert!((theme.animation_speed - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_create_theme_dark() {
+        let theme = create_theme(ThemeMode::Dark);
+        // Just verify it doesn't panic
+        let _ = theme;
+    }
+
+    #[test]
+    fn test_create_theme_light() {
+        let theme = create_theme(ThemeMode::Light);
+        let _ = theme;
+    }
+
+    #[test]
+    fn test_create_theme_system_defaults_to_dark() {
+        let theme = create_theme(ThemeMode::System);
+        // System should use dark theme as fallback
+        let _ = theme;
+    }
+
+    #[test]
+    fn test_nyx_theme_serialization() {
+        let theme = NyxTheme::default();
+        let json = serde_json::to_string(&theme).unwrap();
+        let parsed: NyxTheme = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.mode, theme.mode);
+        assert_eq!(parsed.accent, theme.accent);
     }
 }

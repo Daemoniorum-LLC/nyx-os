@@ -271,3 +271,163 @@ pub fn darken(color: Color, amount: f32) -> Color {
 pub fn with_alpha(color: Color, alpha: f32) -> Color {
     Color::from_rgba(color.r, color.g, color.b, alpha)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dark_palette_has_dark_background() {
+        let palette = ColorPalette::dark();
+        // Dark mode background should be dark (low RGB values)
+        assert!(palette.background.r < 0.2);
+        assert!(palette.background.g < 0.2);
+        assert!(palette.background.b < 0.2);
+    }
+
+    #[test]
+    fn test_light_palette_has_light_background() {
+        let palette = ColorPalette::light();
+        // Light mode background should be light (high RGB values)
+        assert!(palette.background.r > 0.9);
+        assert!(palette.background.g > 0.9);
+        assert!(palette.background.b > 0.9);
+    }
+
+    #[test]
+    fn test_dark_palette_text_is_bright() {
+        let palette = ColorPalette::dark();
+        // Dark mode text should be bright for contrast
+        assert!(palette.text_primary.r > 0.9);
+        assert!(palette.text_primary.g > 0.9);
+    }
+
+    #[test]
+    fn test_light_palette_text_is_dark() {
+        let palette = ColorPalette::light();
+        // Light mode text should be dark for contrast
+        assert!(palette.text_primary.r < 0.2);
+        assert!(palette.text_primary.g < 0.2);
+    }
+
+    #[test]
+    fn test_accent_colors_are_distinct() {
+        let aurora = AccentColor::Aurora.to_color();
+        let ethereal = AccentColor::Ethereal.to_color();
+        let celestial = AccentColor::Celestial.to_color();
+
+        // Each accent should have a dominant color channel
+        assert!(aurora.b > aurora.r && aurora.b > aurora.g); // Purple-blue
+        assert!(ethereal.g > ethereal.r); // Cyan-teal
+        assert!(celestial.r > celestial.b); // Pink-magenta
+    }
+
+    #[test]
+    fn test_lighten_increases_brightness() {
+        let color = Color::from_rgb(0.5, 0.5, 0.5);
+        let lighter = lighten(color, 0.2);
+
+        assert!(lighter.r > color.r);
+        assert!(lighter.g > color.g);
+        assert!(lighter.b > color.b);
+    }
+
+    #[test]
+    fn test_lighten_clamps_at_max() {
+        let color = Color::from_rgb(0.95, 0.95, 0.95);
+        let lighter = lighten(color, 0.2);
+
+        assert!((lighter.r - 1.0).abs() < 0.001);
+        assert!((lighter.g - 1.0).abs() < 0.001);
+        assert!((lighter.b - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_darken_decreases_brightness() {
+        let color = Color::from_rgb(0.5, 0.5, 0.5);
+        let darker = darken(color, 0.2);
+
+        assert!(darker.r < color.r);
+        assert!(darker.g < color.g);
+        assert!(darker.b < color.b);
+    }
+
+    #[test]
+    fn test_darken_clamps_at_min() {
+        let color = Color::from_rgb(0.05, 0.05, 0.05);
+        let darker = darken(color, 0.2);
+
+        assert!(darker.r.abs() < 0.001);
+        assert!(darker.g.abs() < 0.001);
+        assert!(darker.b.abs() < 0.001);
+    }
+
+    #[test]
+    fn test_with_alpha_preserves_rgb() {
+        let color = Color::from_rgb(0.5, 0.6, 0.7);
+        let with_alpha = with_alpha(color, 0.5);
+
+        assert!((with_alpha.r - color.r).abs() < 0.001);
+        assert!((with_alpha.g - color.g).abs() < 0.001);
+        assert!((with_alpha.b - color.b).abs() < 0.001);
+        assert!((with_alpha.a - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_accent_hover_is_lighter() {
+        let base = AccentColor::Aurora.to_color();
+        let hover = AccentColor::Aurora.to_hover_color();
+
+        // Hover should be lighter (higher values)
+        assert!(hover.r >= base.r);
+        assert!(hover.g >= base.g);
+        assert!(hover.b >= base.b);
+    }
+
+    #[test]
+    fn test_accent_pressed_is_darker() {
+        let base = AccentColor::Aurora.to_color();
+        let pressed = AccentColor::Aurora.to_pressed_color();
+
+        // Pressed should be darker (lower values)
+        assert!(pressed.r <= base.r);
+        assert!(pressed.g <= base.g);
+        assert!(pressed.b <= base.b);
+    }
+
+    #[test]
+    fn test_all_accent_colors() {
+        // Ensure all accent colors can be converted without panic
+        let accents = [
+            AccentColor::Aurora,
+            AccentColor::Ethereal,
+            AccentColor::Celestial,
+            AccentColor::Emerald,
+            AccentColor::Azure,
+            AccentColor::Amber,
+            AccentColor::Custom,
+        ];
+
+        for accent in accents {
+            let _ = accent.to_color();
+            let _ = accent.to_hover_color();
+            let _ = accent.to_pressed_color();
+        }
+    }
+
+    #[test]
+    fn test_default_accent_is_aurora() {
+        assert_eq!(AccentColor::default(), AccentColor::Aurora);
+    }
+
+    #[test]
+    fn test_semantic_colors_are_appropriate() {
+        // Success should be greenish
+        assert!(NyxColors::SUCCESS.g > NyxColors::SUCCESS.r);
+        // Error should be reddish
+        assert!(NyxColors::ERROR.r > NyxColors::ERROR.g);
+        // Warning should be yellowish (high R and G)
+        assert!(NyxColors::WARNING.r > 0.8);
+        assert!(NyxColors::WARNING.g > 0.6);
+    }
+}

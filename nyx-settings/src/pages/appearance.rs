@@ -239,3 +239,174 @@ impl AppearancePage {
         .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // APPEARANCE PAGE DEFAULT TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_appearance_page_default() {
+        let page = AppearancePage::default();
+        assert_eq!(page.theme_mode, ThemeMode::Dark);
+        assert_eq!(page.accent, AccentColor::Aurora);
+        assert!(page.animations);
+        assert!(page.blur_effects);
+    }
+
+    #[test]
+    fn test_appearance_page_default_theme_is_dark() {
+        let page = AppearancePage::default();
+        assert_eq!(page.theme_mode, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn test_appearance_page_default_accent_is_aurora() {
+        let page = AppearancePage::default();
+        assert_eq!(page.accent, AccentColor::Aurora);
+    }
+
+    #[test]
+    fn test_appearance_page_animations_enabled_by_default() {
+        let page = AppearancePage::default();
+        assert!(page.animations);
+    }
+
+    #[test]
+    fn test_appearance_page_blur_enabled_by_default() {
+        let page = AppearancePage::default();
+        assert!(page.blur_effects);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // THEME MODE UPDATE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_set_theme_mode_light() {
+        let mut page = AppearancePage::default();
+        page.update(AppearanceMessage::SetThemeMode(ThemeMode::Light));
+        assert_eq!(page.theme_mode, ThemeMode::Light);
+    }
+
+    #[test]
+    fn test_set_theme_mode_dark() {
+        let mut page = AppearancePage {
+            theme_mode: ThemeMode::Light,
+            ..Default::default()
+        };
+        page.update(AppearanceMessage::SetThemeMode(ThemeMode::Dark));
+        assert_eq!(page.theme_mode, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn test_set_theme_mode_system() {
+        let mut page = AppearancePage::default();
+        page.update(AppearanceMessage::SetThemeMode(ThemeMode::System));
+        assert_eq!(page.theme_mode, ThemeMode::System);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ACCENT COLOR UPDATE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_set_accent_ethereal() {
+        let mut page = AppearancePage::default();
+        page.update(AppearanceMessage::SetAccent(AccentColor::Ethereal));
+        assert_eq!(page.accent, AccentColor::Ethereal);
+    }
+
+    #[test]
+    fn test_set_accent_celestial() {
+        let mut page = AppearancePage::default();
+        page.update(AppearanceMessage::SetAccent(AccentColor::Celestial));
+        assert_eq!(page.accent, AccentColor::Celestial);
+    }
+
+    #[test]
+    fn test_set_accent_emerald() {
+        let mut page = AppearancePage::default();
+        page.update(AppearanceMessage::SetAccent(AccentColor::Emerald));
+        assert_eq!(page.accent, AccentColor::Emerald);
+    }
+
+    #[test]
+    fn test_set_accent_azure() {
+        let mut page = AppearancePage::default();
+        page.update(AppearanceMessage::SetAccent(AccentColor::Azure));
+        assert_eq!(page.accent, AccentColor::Azure);
+    }
+
+    #[test]
+    fn test_set_accent_amber() {
+        let mut page = AppearancePage::default();
+        page.update(AppearanceMessage::SetAccent(AccentColor::Amber));
+        assert_eq!(page.accent, AccentColor::Amber);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EFFECTS TOGGLE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_toggle_animations_off() {
+        let mut page = AppearancePage::default();
+        assert!(page.animations);
+        page.update(AppearanceMessage::ToggleAnimations(false));
+        assert!(!page.animations);
+    }
+
+    #[test]
+    fn test_toggle_animations_on() {
+        let mut page = AppearancePage {
+            animations: false,
+            ..Default::default()
+        };
+        page.update(AppearanceMessage::ToggleAnimations(true));
+        assert!(page.animations);
+    }
+
+    #[test]
+    fn test_toggle_blur_off() {
+        let mut page = AppearancePage::default();
+        assert!(page.blur_effects);
+        page.update(AppearanceMessage::ToggleBlur(false));
+        assert!(!page.blur_effects);
+    }
+
+    #[test]
+    fn test_toggle_blur_on() {
+        let mut page = AppearancePage {
+            blur_effects: false,
+            ..Default::default()
+        };
+        page.update(AppearanceMessage::ToggleBlur(true));
+        assert!(page.blur_effects);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // APPEARANCE MESSAGE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_appearance_message_clone() {
+        let msg = AppearanceMessage::SetAccent(AccentColor::Aurora);
+        let cloned = msg.clone();
+        if let AppearanceMessage::SetAccent(accent) = cloned {
+            assert_eq!(accent, AccentColor::Aurora);
+        } else {
+            panic!("Expected SetAccent");
+        }
+    }
+
+    #[test]
+    fn test_appearance_message_debug() {
+        let msg = AppearanceMessage::ToggleBlur(true);
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("ToggleBlur"));
+    }
+}

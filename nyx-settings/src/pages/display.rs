@@ -244,3 +244,174 @@ impl DisplayPage {
         .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RESOLUTION TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_resolution_equality() {
+        let r1 = Resolution { width: 1920, height: 1080 };
+        let r2 = Resolution { width: 1920, height: 1080 };
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn test_resolution_inequality() {
+        let r1 = Resolution { width: 1920, height: 1080 };
+        let r2 = Resolution { width: 2560, height: 1440 };
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn test_resolution_display() {
+        let res = Resolution { width: 1920, height: 1080 };
+        assert_eq!(format!("{}", res), "1920x1080");
+    }
+
+    #[test]
+    fn test_resolution_display_4k() {
+        let res = Resolution { width: 3840, height: 2160 };
+        assert_eq!(format!("{}", res), "3840x2160");
+    }
+
+    #[test]
+    fn test_resolution_copy() {
+        let r1 = Resolution { width: 1280, height: 720 };
+        let r2 = r1;
+        assert_eq!(r1, r2);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DISPLAY PAGE DEFAULT TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_display_page_default() {
+        let page = DisplayPage::default();
+        assert_eq!(page.resolution.width, 1920);
+        assert_eq!(page.resolution.height, 1080);
+    }
+
+    #[test]
+    fn test_display_page_default_refresh() {
+        let page = DisplayPage::default();
+        assert_eq!(page.refresh_rate, 60);
+    }
+
+    #[test]
+    fn test_display_page_default_scale() {
+        let page = DisplayPage::default();
+        assert_eq!(page.scale, 100);
+    }
+
+    #[test]
+    fn test_display_page_default_night_light_off() {
+        let page = DisplayPage::default();
+        assert!(!page.night_light);
+    }
+
+    #[test]
+    fn test_display_page_default_night_light_intensity() {
+        let page = DisplayPage::default();
+        assert_eq!(page.night_light_intensity, 50);
+    }
+
+    #[test]
+    fn test_display_page_default_resolutions() {
+        let page = DisplayPage::default();
+        assert!(!page.resolutions.is_empty());
+        assert!(page.resolutions.len() >= 3);
+    }
+
+    #[test]
+    fn test_display_page_resolutions_contains_current() {
+        let page = DisplayPage::default();
+        assert!(page.resolutions.contains(&page.resolution));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DISPLAY PAGE UPDATE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_set_resolution() {
+        let mut page = DisplayPage::default();
+        let new_res = Resolution { width: 2560, height: 1440 };
+        page.update(DisplayMessage::SetResolution(new_res));
+        assert_eq!(page.resolution, new_res);
+    }
+
+    #[test]
+    fn test_set_refresh_rate() {
+        let mut page = DisplayPage::default();
+        page.update(DisplayMessage::SetRefreshRate(144));
+        assert_eq!(page.refresh_rate, 144);
+    }
+
+    #[test]
+    fn test_set_scale() {
+        let mut page = DisplayPage::default();
+        page.update(DisplayMessage::SetScale(150));
+        assert_eq!(page.scale, 150);
+    }
+
+    #[test]
+    fn test_toggle_night_light_on() {
+        let mut page = DisplayPage::default();
+        assert!(!page.night_light);
+        page.update(DisplayMessage::ToggleNightLight(true));
+        assert!(page.night_light);
+    }
+
+    #[test]
+    fn test_toggle_night_light_off() {
+        let mut page = DisplayPage {
+            night_light: true,
+            ..Default::default()
+        };
+        page.update(DisplayMessage::ToggleNightLight(false));
+        assert!(!page.night_light);
+    }
+
+    #[test]
+    fn test_set_night_light_intensity() {
+        let mut page = DisplayPage::default();
+        page.update(DisplayMessage::SetNightLightIntensity(75));
+        assert_eq!(page.night_light_intensity, 75);
+    }
+
+    #[test]
+    fn test_toggle_schedule() {
+        let mut page = DisplayPage::default();
+        assert!(!page.night_light_schedule);
+        page.update(DisplayMessage::ToggleSchedule(true));
+        assert!(page.night_light_schedule);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DISPLAY MESSAGE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_display_message_clone() {
+        let msg = DisplayMessage::SetScale(125);
+        let cloned = msg.clone();
+        if let DisplayMessage::SetScale(v) = cloned {
+            assert_eq!(v, 125);
+        } else {
+            panic!("Expected SetScale");
+        }
+    }
+
+    #[test]
+    fn test_display_message_debug() {
+        let msg = DisplayMessage::ToggleNightLight(true);
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("ToggleNightLight"));
+    }
+}

@@ -200,3 +200,148 @@ impl Padding {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_spacing_scale_is_ordered() {
+        assert!(Spacing::NONE < Spacing::XXS);
+        assert!(Spacing::XXS < Spacing::XS);
+        assert!(Spacing::XS < Spacing::SM);
+        assert!(Spacing::SM < Spacing::MD);
+        assert!(Spacing::MD < Spacing::LG);
+        assert!(Spacing::LG < Spacing::XL);
+        assert!(Spacing::XL < Spacing::XXL);
+        assert!(Spacing::XXL < Spacing::XXXL);
+        assert!(Spacing::XXXL < Spacing::XXXXL);
+    }
+
+    #[test]
+    fn test_spacing_base_unit() {
+        assert!((Spacing::UNIT - 4.0).abs() < 0.01);
+        assert!((Spacing::XS - Spacing::UNIT).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_spacing_multiples_of_base() {
+        // XS should be 1x base (4)
+        assert!((Spacing::XS - 4.0).abs() < 0.01);
+        // SM should be 2x base (8)
+        assert!((Spacing::SM - 8.0).abs() < 0.01);
+        // LG should be 4x base (16)
+        assert!((Spacing::LG - 16.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_icon_sizes_ordered() {
+        assert!(Spacing::ICON_XS < Spacing::ICON_SM);
+        assert!(Spacing::ICON_SM < Spacing::ICON_MD);
+        assert!(Spacing::ICON_MD < Spacing::ICON_LG);
+        assert!(Spacing::ICON_LG < Spacing::ICON_XL);
+    }
+
+    #[test]
+    fn test_avatar_sizes_ordered() {
+        assert!(Spacing::AVATAR_XS < Spacing::AVATAR_SM);
+        assert!(Spacing::AVATAR_SM < Spacing::AVATAR_MD);
+        assert!(Spacing::AVATAR_MD < Spacing::AVATAR_LG);
+        assert!(Spacing::AVATAR_LG < Spacing::AVATAR_XL);
+    }
+
+    #[test]
+    fn test_button_heights_ordered() {
+        assert!(Spacing::BUTTON_HEIGHT_SM < Spacing::BUTTON_HEIGHT_MD);
+        assert!(Spacing::BUTTON_HEIGHT_MD < Spacing::BUTTON_HEIGHT_LG);
+    }
+
+    #[test]
+    fn test_input_heights_ordered() {
+        assert!(Spacing::INPUT_HEIGHT_SM < Spacing::INPUT_HEIGHT_MD);
+        assert!(Spacing::INPUT_HEIGHT_MD < Spacing::INPUT_HEIGHT_LG);
+    }
+
+    #[test]
+    fn test_radius_ordered() {
+        assert!(Spacing::RADIUS_NONE < Spacing::RADIUS_SM);
+        assert!(Spacing::RADIUS_SM < Spacing::RADIUS_MD);
+        assert!(Spacing::RADIUS_MD < Spacing::RADIUS_LG);
+        assert!(Spacing::RADIUS_LG < Spacing::RADIUS_XL);
+    }
+
+    #[test]
+    fn test_radius_pill_and_circle_are_large() {
+        assert!(Spacing::RADIUS_PILL > 1000.0);
+        assert!(Spacing::RADIUS_CIRCLE > 1000.0);
+    }
+
+    #[test]
+    fn test_shadow_sizes_ordered() {
+        assert!(Spacing::SHADOW_SM < Spacing::SHADOW_MD);
+        assert!(Spacing::SHADOW_MD < Spacing::SHADOW_LG);
+        assert!(Spacing::SHADOW_LG < Spacing::SHADOW_XL);
+    }
+
+    #[test]
+    fn test_duration_ordered() {
+        assert!(Spacing::DURATION_FAST < Spacing::DURATION_NORMAL);
+        assert!(Spacing::DURATION_NORMAL < Spacing::DURATION_SLOW);
+        assert!(Spacing::DURATION_SLOW < Spacing::DURATION_SLOWER);
+    }
+
+    #[test]
+    fn test_shell_dimensions_reasonable() {
+        assert!(Spacing::PANEL_HEIGHT > 0.0);
+        assert!(Spacing::DOCK_HEIGHT > Spacing::PANEL_HEIGHT);
+        assert!(Spacing::SIDEBAR_COLLAPSED < Spacing::SIDEBAR_EXPANDED);
+        assert!(Spacing::CONTROL_CENTER_WIDTH > 0.0);
+        assert!(Spacing::ASSISTANT_WIDTH > Spacing::CONTROL_CENTER_WIDTH);
+    }
+
+    #[test]
+    fn test_padding_all() {
+        let padding = Padding::all(16.0);
+        assert!((padding.top - 16.0).abs() < 0.01);
+        assert!((padding.right - 16.0).abs() < 0.01);
+        assert!((padding.bottom - 16.0).abs() < 0.01);
+        assert!((padding.left - 16.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_padding_symmetric() {
+        let padding = Padding::symmetric(8.0, 16.0);
+        assert!((padding.top - 8.0).abs() < 0.01);
+        assert!((padding.bottom - 8.0).abs() < 0.01);
+        assert!((padding.right - 16.0).abs() < 0.01);
+        assert!((padding.left - 16.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_padding_new() {
+        let padding = Padding::new(1.0, 2.0, 3.0, 4.0);
+        assert!((padding.top - 1.0).abs() < 0.01);
+        assert!((padding.right - 2.0).abs() < 0.01);
+        assert!((padding.bottom - 3.0).abs() < 0.01);
+        assert!((padding.left - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_padding_default() {
+        let padding = Padding::default();
+        assert!(padding.top.abs() < 0.01);
+        assert!(padding.right.abs() < 0.01);
+        assert!(padding.bottom.abs() < 0.01);
+        assert!(padding.left.abs() < 0.01);
+    }
+
+    #[test]
+    fn test_padding_to_iced() {
+        let padding = Padding::new(1.0, 2.0, 3.0, 4.0);
+        let iced_padding = padding.to_iced();
+        assert!((iced_padding.top - 1.0).abs() < 0.01);
+        assert!((iced_padding.right - 2.0).abs() < 0.01);
+        assert!((iced_padding.bottom - 3.0).abs() < 0.01);
+        assert!((iced_padding.left - 4.0).abs() < 0.01);
+    }
+}

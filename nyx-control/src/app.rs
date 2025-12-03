@@ -352,3 +352,270 @@ impl NyxControl {
         .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONTROL STATE DEFAULT TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_control_state_default() {
+        let state = ControlState::default();
+        assert!(state.wifi);
+        assert!(!state.bluetooth);
+        assert!(!state.airplane);
+        assert!(!state.night_light);
+        assert!(!state.dnd);
+        assert!(!state.muted);
+    }
+
+    #[test]
+    fn test_control_state_default_volume() {
+        let state = ControlState::default();
+        assert_eq!(state.volume, 65);
+    }
+
+    #[test]
+    fn test_control_state_default_brightness() {
+        let state = ControlState::default();
+        assert_eq!(state.brightness, 80);
+    }
+
+    #[test]
+    fn test_control_state_default_wifi_network() {
+        let state = ControlState::default();
+        assert!(state.wifi_network.is_some());
+        assert_eq!(state.wifi_network.as_deref(), Some("Nyx-Network"));
+    }
+
+    #[test]
+    fn test_control_state_default_bt_device() {
+        let state = ControlState::default();
+        assert!(state.bt_device.is_none());
+    }
+
+    #[test]
+    fn test_control_state_clone() {
+        let state = ControlState::default();
+        let cloned = state.clone();
+        assert_eq!(state.volume, cloned.volume);
+        assert_eq!(state.wifi, cloned.wifi);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONTROL STATE TOGGLE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_toggle_wifi_off() {
+        let mut app = NyxControl {
+            state: ControlState::default(),
+        };
+        assert!(app.state.wifi);
+        assert!(app.state.wifi_network.is_some());
+
+        app.handle_control(ControlMessage::ToggleWifi);
+
+        assert!(!app.state.wifi);
+        assert!(app.state.wifi_network.is_none());
+    }
+
+    #[test]
+    fn test_toggle_wifi_on() {
+        let mut app = NyxControl {
+            state: ControlState {
+                wifi: false,
+                wifi_network: None,
+                ..Default::default()
+            },
+        };
+
+        app.handle_control(ControlMessage::ToggleWifi);
+
+        assert!(app.state.wifi);
+    }
+
+    #[test]
+    fn test_toggle_bluetooth_off() {
+        let mut app = NyxControl {
+            state: ControlState {
+                bluetooth: true,
+                bt_device: Some("Device".to_string()),
+                ..Default::default()
+            },
+        };
+
+        app.handle_control(ControlMessage::ToggleBluetooth);
+
+        assert!(!app.state.bluetooth);
+        assert!(app.state.bt_device.is_none());
+    }
+
+    #[test]
+    fn test_toggle_airplane_enables_radio_disable() {
+        let mut app = NyxControl {
+            state: ControlState {
+                wifi: true,
+                bluetooth: true,
+                ..Default::default()
+            },
+        };
+
+        app.handle_control(ControlMessage::ToggleAirplane);
+
+        assert!(app.state.airplane);
+        assert!(!app.state.wifi);
+        assert!(!app.state.bluetooth);
+    }
+
+    #[test]
+    fn test_toggle_night_light() {
+        let mut app = NyxControl {
+            state: ControlState::default(),
+        };
+        assert!(!app.state.night_light);
+
+        app.handle_control(ControlMessage::ToggleNightLight);
+
+        assert!(app.state.night_light);
+
+        app.handle_control(ControlMessage::ToggleNightLight);
+
+        assert!(!app.state.night_light);
+    }
+
+    #[test]
+    fn test_toggle_dnd() {
+        let mut app = NyxControl {
+            state: ControlState::default(),
+        };
+        assert!(!app.state.dnd);
+
+        app.handle_control(ControlMessage::ToggleDnd);
+
+        assert!(app.state.dnd);
+    }
+
+    #[test]
+    fn test_toggle_mute() {
+        let mut app = NyxControl {
+            state: ControlState::default(),
+        };
+        assert!(!app.state.muted);
+
+        app.handle_control(ControlMessage::ToggleMute);
+
+        assert!(app.state.muted);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SLIDER TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_volume_change() {
+        let mut app = NyxControl {
+            state: ControlState::default(),
+        };
+
+        app.handle_control(ControlMessage::VolumeChanged(50));
+
+        assert_eq!(app.state.volume, 50);
+    }
+
+    #[test]
+    fn test_volume_change_unmutes() {
+        let mut app = NyxControl {
+            state: ControlState {
+                muted: true,
+                ..Default::default()
+            },
+        };
+
+        app.handle_control(ControlMessage::VolumeChanged(50));
+
+        assert!(!app.state.muted);
+    }
+
+    #[test]
+    fn test_volume_zero_keeps_mute() {
+        let mut app = NyxControl {
+            state: ControlState {
+                muted: true,
+                ..Default::default()
+            },
+        };
+
+        app.handle_control(ControlMessage::VolumeChanged(0));
+
+        assert!(app.state.muted); // Should stay muted
+    }
+
+    #[test]
+    fn test_brightness_change() {
+        let mut app = NyxControl {
+            state: ControlState::default(),
+        };
+
+        app.handle_control(ControlMessage::BrightnessChanged(100));
+
+        assert_eq!(app.state.brightness, 100);
+    }
+
+    #[test]
+    fn test_brightness_range() {
+        let mut app = NyxControl {
+            state: ControlState::default(),
+        };
+
+        // Test minimum
+        app.handle_control(ControlMessage::BrightnessChanged(0));
+        assert_eq!(app.state.brightness, 0);
+
+        // Test maximum
+        app.handle_control(ControlMessage::BrightnessChanged(100));
+        assert_eq!(app.state.brightness, 100);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // APPLICATION TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_app_title() {
+        let (app, _) = NyxControl::new(());
+        assert_eq!(app.title(), "Nyx Control");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MESSAGE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_message_control_wrapping() {
+        let msg = Message::Control(ControlMessage::ToggleWifi);
+        matches!(msg, Message::Control(_));
+    }
+
+    #[test]
+    fn test_message_tick() {
+        let msg = Message::Tick;
+        matches!(msg, Message::Tick);
+    }
+
+    #[test]
+    fn test_message_close() {
+        let msg = Message::Close;
+        matches!(msg, Message::Close);
+    }
+
+    #[test]
+    fn test_message_clone() {
+        let msg = Message::Tick;
+        let cloned = msg.clone();
+        matches!(cloned, Message::Tick);
+    }
+}

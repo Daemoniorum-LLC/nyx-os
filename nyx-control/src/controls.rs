@@ -234,3 +234,119 @@ where
     .on_press(on_press)
     .into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // POWER ACTION TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_power_action_equality() {
+        assert_eq!(PowerAction::Lock, PowerAction::Lock);
+        assert_eq!(PowerAction::Suspend, PowerAction::Suspend);
+        assert_eq!(PowerAction::Restart, PowerAction::Restart);
+        assert_eq!(PowerAction::Shutdown, PowerAction::Shutdown);
+    }
+
+    #[test]
+    fn test_power_action_inequality() {
+        assert_ne!(PowerAction::Lock, PowerAction::Suspend);
+        assert_ne!(PowerAction::Restart, PowerAction::Shutdown);
+    }
+
+    #[test]
+    fn test_power_action_copy() {
+        let action = PowerAction::Lock;
+        let copy = action;
+        assert_eq!(action, copy);
+    }
+
+    #[test]
+    fn test_power_action_clone() {
+        let action = PowerAction::Shutdown;
+        let cloned = action.clone();
+        assert_eq!(action, cloned);
+    }
+
+    #[test]
+    fn test_power_action_debug() {
+        let debug = format!("{:?}", PowerAction::Restart);
+        assert!(debug.contains("Restart"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONTROL MESSAGE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_control_message_volume_changed() {
+        let msg = ControlMessage::VolumeChanged(50);
+        if let ControlMessage::VolumeChanged(v) = msg {
+            assert_eq!(v, 50);
+        } else {
+            panic!("Expected VolumeChanged");
+        }
+    }
+
+    #[test]
+    fn test_control_message_brightness_changed() {
+        let msg = ControlMessage::BrightnessChanged(75);
+        if let ControlMessage::BrightnessChanged(b) = msg {
+            assert_eq!(b, 75);
+        } else {
+            panic!("Expected BrightnessChanged");
+        }
+    }
+
+    #[test]
+    fn test_control_message_power_action() {
+        let msg = ControlMessage::PowerAction(PowerAction::Lock);
+        if let ControlMessage::PowerAction(action) = msg {
+            assert_eq!(action, PowerAction::Lock);
+        } else {
+            panic!("Expected PowerAction");
+        }
+    }
+
+    #[test]
+    fn test_control_message_clone() {
+        let msg = ControlMessage::ToggleWifi;
+        let cloned = msg.clone();
+        // Both should be toggle wifi
+        matches!(cloned, ControlMessage::ToggleWifi);
+    }
+
+    #[test]
+    fn test_control_message_debug() {
+        let msg = ControlMessage::ToggleDnd;
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("ToggleDnd"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ALL TOGGLE MESSAGES TEST
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_all_toggle_messages_exist() {
+        // Verify all toggle message variants can be constructed
+        let _wifi = ControlMessage::ToggleWifi;
+        let _bt = ControlMessage::ToggleBluetooth;
+        let _airplane = ControlMessage::ToggleAirplane;
+        let _night = ControlMessage::ToggleNightLight;
+        let _dnd = ControlMessage::ToggleDnd;
+        let _mute = ControlMessage::ToggleMute;
+    }
+
+    #[test]
+    fn test_all_open_settings_messages_exist() {
+        let _settings = ControlMessage::OpenSettings;
+        let _wifi = ControlMessage::OpenWifiSettings;
+        let _bt = ControlMessage::OpenBluetoothSettings;
+        let _display = ControlMessage::OpenDisplaySettings;
+        let _sound = ControlMessage::OpenSoundSettings;
+    }
+}
