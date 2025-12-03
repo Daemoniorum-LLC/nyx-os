@@ -488,7 +488,7 @@ impl CpuScheduler {
     /// Add a thread to the timer queue
     ///
     /// Complexity: O(log n) - much better than O(n log n) with Vec + sort
-    fn add_to_timer_queue(&mut self, thread_id: ThreadId, wake_tick: u64) {
+    pub fn add_to_timer_queue(&mut self, thread_id: ThreadId, wake_tick: u64) {
         self.timer_queue.push(TimerEntry {
             thread_id,
             wake_tick,

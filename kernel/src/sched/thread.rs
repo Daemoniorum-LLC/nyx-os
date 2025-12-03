@@ -38,8 +38,12 @@ pub enum ThreadState {
 /// Reason for blocking
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockReason {
-    /// Waiting for IPC
+    /// Waiting for IPC (generic)
     Ipc,
+    /// Waiting for IPC receive
+    IpcReceive,
+    /// Waiting for IPC send
+    IpcSend,
     /// Waiting for notification
     Notification,
     /// Sleeping
@@ -52,6 +56,10 @@ pub enum BlockReason {
     Mutex,
     /// Waiting for semaphore
     Semaphore,
+    /// Waiting on a futex
+    Futex,
+    /// Waiting for a signal
+    Signal,
     /// Waiting for another thread to exit (thread join)
     Join(ThreadId),
 }

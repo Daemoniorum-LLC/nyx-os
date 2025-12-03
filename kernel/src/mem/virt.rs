@@ -33,6 +33,53 @@ pub struct Vma {
     pub flags: VmaFlags,
 }
 
+impl Vma {
+    /// Check if this VMA is readable
+    pub fn is_readable(&self) -> bool {
+        self.protection.contains(Protection::READ)
+    }
+
+    /// Check if this VMA is writable
+    pub fn is_writable(&self) -> bool {
+        self.protection.contains(Protection::WRITE)
+    }
+
+    /// Check if this VMA is executable
+    pub fn is_executable(&self) -> bool {
+        self.protection.contains(Protection::EXECUTE)
+    }
+
+    /// Check if this VMA is user-accessible
+    pub fn is_user(&self) -> bool {
+        self.protection.contains(Protection::USER)
+    }
+
+    /// Get the size of this VMA
+    pub fn size(&self) -> u64 {
+        self.end.as_u64() - self.start.as_u64()
+    }
+
+    /// Check if an address is within this VMA
+    pub fn contains(&self, addr: VirtAddr) -> bool {
+        addr.as_u64() >= self.start.as_u64() && addr.as_u64() < self.end.as_u64()
+    }
+
+    /// Check if this VMA is a kernel mapping (not user-accessible)
+    pub fn is_kernel(&self) -> bool {
+        !self.protection.contains(Protection::USER)
+    }
+
+    /// Get the start address of this VMA
+    pub fn start(&self) -> VirtAddr {
+        self.start
+    }
+
+    /// Get the end address of this VMA
+    pub fn end(&self) -> VirtAddr {
+        self.end
+    }
+}
+
 bitflags! {
     /// Memory protection flags
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -274,6 +321,11 @@ impl AddressSpace {
 
     /// Get iterator over memory regions (for checkpointing)
     pub fn regions(&self) -> impl Iterator<Item = &Vma> {
+        self.vmas.values()
+    }
+
+    /// Get iterator over VMAs (alias for regions)
+    pub fn iter_vmas(&self) -> impl Iterator<Item = &Vma> {
         self.vmas.values()
     }
 

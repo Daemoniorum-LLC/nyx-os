@@ -17,8 +17,8 @@ use crate::ipc;
 use crate::mem::user::{copy_from_user, copy_string_from_user, copy_to_user, UserMemError};
 use crate::mem::{VirtAddr, PAGE_SIZE};
 use crate::process::{ProcessId, SpawnArgs, SpawnError};
-use crate::sched::{BlockReason, SchedClass, ThreadState};
-use alloc::string::String;
+use crate::sched::{BlockReason, SchedClass, ThreadId, ThreadState};
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::time::Duration;
 
@@ -1144,7 +1144,7 @@ fn handle_tensor_migrate(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     };
 
     // Check capability rights
-    if !cap.rights().contains(Rights::TENSOR_MIGRATE) {
+    if !cap.has_rights(Rights::TENSOR_MIGRATE) {
         return Err(SyscallError::PermissionDenied);
     }
 

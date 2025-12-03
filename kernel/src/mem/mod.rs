@@ -165,3 +165,13 @@ pub fn free_contiguous(addr: PhysAddr, size: u64) {
         free_frame(PhysAddr::new(addr.as_u64() + (i as u64) * PAGE_SIZE));
     }
 }
+
+/// Get total system memory in bytes
+pub fn get_total_memory() -> Option<u64> {
+    FRAME_ALLOCATOR.lock().as_ref().map(|a| a.total_memory())
+}
+
+/// Get available memory in bytes
+pub fn get_available_memory() -> Option<u64> {
+    FRAME_ALLOCATOR.lock().as_ref().map(|a| a.available_memory())
+}

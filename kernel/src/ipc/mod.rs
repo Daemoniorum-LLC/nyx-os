@@ -18,7 +18,7 @@
 mod ring;
 mod message;
 mod endpoint;
-mod notification;
+pub mod notification;
 pub mod shm;
 
 pub use ring::{IpcRing, SqEntry, CqEntry, IpcOpcode, SqFlags, CqFlags, ring_flags};

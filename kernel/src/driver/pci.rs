@@ -30,6 +30,41 @@ pub struct PciDevice {
     pub driver: Option<String>,
 }
 
+impl PciDevice {
+    /// Get the size of a BAR (Base Address Register)
+    pub fn bar_size(&self, index: usize) -> u64 {
+        if index < 6 && self.info.bars[index].present {
+            self.info.bars[index].size
+        } else {
+            0
+        }
+    }
+
+    /// Get the base address of a BAR
+    pub fn bar_address(&self, index: usize) -> Option<u64> {
+        if index < 6 && self.info.bars[index].present {
+            Some(self.info.bars[index].address)
+        } else {
+            None
+        }
+    }
+
+    /// Check if a BAR is memory-mapped (vs I/O space)
+    pub fn bar_is_memory(&self, index: usize) -> bool {
+        index < 6 && self.info.bars[index].present && self.info.bars[index].is_memory
+    }
+
+    /// Check if a BAR is 64-bit
+    pub fn bar_is_64bit(&self, index: usize) -> bool {
+        index < 6 && self.info.bars[index].present && self.info.bars[index].is_64bit
+    }
+
+    /// Check if a BAR is prefetchable
+    pub fn bar_is_prefetchable(&self, index: usize) -> bool {
+        index < 6 && self.info.bars[index].present && self.info.bars[index].prefetchable
+    }
+}
+
 /// Initialize PCI subsystem
 pub fn init() {
     log::info!("Initializing PCI subsystem");

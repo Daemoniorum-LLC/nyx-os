@@ -17,7 +17,7 @@ use spin::RwLock;
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
 /// Global process table
-static PROCESSES: RwLock<BTreeMap<ProcessId, Process>> = RwLock::new(BTreeMap::new());
+pub static PROCESSES: RwLock<BTreeMap<ProcessId, Process>> = RwLock::new(BTreeMap::new());
 
 /// Process identifier
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -784,6 +784,8 @@ impl Clone for Process {
             fd_table: self.fd_table.clone(),
             next_fd: self.next_fd,
             mem_stats: self.mem_stats,
+            allocations: BTreeMap::new(), // Allocations are not cloned (fresh address space)
+            join_waiters: BTreeMap::new(), // Join waiters are not cloned
         }
     }
 }

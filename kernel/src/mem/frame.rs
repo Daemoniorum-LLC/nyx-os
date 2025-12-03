@@ -299,9 +299,14 @@ impl FrameAllocator {
         (self.free_frames as u64) * PAGE_SIZE
     }
 
-    /// Get total memory in bytes
+    /// Get total system memory in bytes
     pub fn total_memory(&self) -> u64 {
         (self.total_frames as u64) * PAGE_SIZE
+    }
+
+    /// Get available (free) memory in bytes
+    pub fn available_memory(&self) -> u64 {
+        self.free_memory()
     }
 
     /// Get fragmentation info

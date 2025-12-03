@@ -24,7 +24,7 @@
 mod buffer;
 mod device;
 mod inference;
-mod migration;
+pub mod migration;
 mod queue;
 
 pub use buffer::{TensorBuffer, TensorShape, DType};
@@ -170,16 +170,15 @@ fn enumerate_cuda_devices(devices: &mut Vec<ComputeDevice>) {
 
 /// Always available - probe PCI for NVIDIA GPUs
 fn enumerate_nvidia_devices(devices: &mut Vec<ComputeDevice>) {
-    if let Some(pci_devices) = crate::driver::pci::enumerate_devices() {
-        for pci_dev in pci_devices {
-            if pci_dev.vendor_id == PCI_VENDOR_NVIDIA
-                && (pci_dev.class_code == PCI_CLASS_DISPLAY || pci_dev.class_code == PCI_CLASS_ACCELERATOR)
-            {
-                let device = identify_nvidia_gpu(&pci_dev);
-                if let Some(dev) = device {
-                    log::info!("Detected NVIDIA GPU: {} (device 0x{:04X})", dev.name, pci_dev.device_id);
-                    devices.push(dev);
-                }
+    let pci_devices = crate::driver::pci::get_all_devices();
+    for pci_dev in pci_devices {
+        if pci_dev.info.vendor_id == PCI_VENDOR_NVIDIA
+            && (pci_dev.info.class == PCI_CLASS_DISPLAY || pci_dev.info.class == PCI_CLASS_ACCELERATOR)
+        {
+            let device = identify_nvidia_gpu(&pci_dev);
+            if let Some(dev) = device {
+                log::info!("Detected NVIDIA GPU: {} (device 0x{:04X})", dev.name, pci_dev.info.device_id);
+                devices.push(dev);
             }
         }
     }
@@ -189,7 +188,7 @@ fn enumerate_nvidia_devices(devices: &mut Vec<ComputeDevice>) {
 fn identify_nvidia_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDevice> {
     // Device ID ranges for NVIDIA architectures
     // These are simplified - real implementation would have full device tables
-    let (arch_name, compute_units, caps) = match pci_dev.device_id {
+    let (arch_name, compute_units, caps) = match pci_dev.info.device_id {
         // Hopper (H100, etc.) - 0x2300-0x23FF
         0x2300..=0x23FF => (
             "Hopper",
@@ -232,8 +231,11 @@ fn identify_nvidia_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<Comput
         _ => return None,
     };
 
-    // Query VRAM size from BAR1
-    let vram_bytes = pci_dev.bar_size(1).unwrap_or(8 * 1024 * 1024 * 1024);
+    // Query VRAM size from BAR1 (default to 8GB if not available)
+    let vram_bytes = {
+        let size = pci_dev.bar_size(1);
+        if size > 0 { size } else { 8 * 1024 * 1024 * 1024 }
+    };
 
     Some(ComputeDevice {
         id: (devices_count() + 1) as u32,
@@ -247,16 +249,15 @@ fn identify_nvidia_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<Comput
 
 /// AMD GPU enumeration via PCI probing
 fn enumerate_amd_devices(devices: &mut Vec<ComputeDevice>) {
-    if let Some(pci_devices) = crate::driver::pci::enumerate_devices() {
-        for pci_dev in pci_devices {
-            if pci_dev.vendor_id == PCI_VENDOR_AMD
-                && (pci_dev.class_code == PCI_CLASS_DISPLAY || pci_dev.class_code == PCI_CLASS_ACCELERATOR)
-            {
-                let device = identify_amd_gpu(&pci_dev);
-                if let Some(dev) = device {
-                    log::info!("Detected AMD GPU: {} (device 0x{:04X})", dev.name, pci_dev.device_id);
-                    devices.push(dev);
-                }
+    let pci_devices = crate::driver::pci::get_all_devices();
+    for pci_dev in pci_devices {
+        if pci_dev.info.vendor_id == PCI_VENDOR_AMD
+            && (pci_dev.info.class == PCI_CLASS_DISPLAY || pci_dev.info.class == PCI_CLASS_ACCELERATOR)
+        {
+            let device = identify_amd_gpu(&pci_dev);
+            if let Some(dev) = device {
+                log::info!("Detected AMD GPU: {} (device 0x{:04X})", dev.name, pci_dev.info.device_id);
+                devices.push(dev);
             }
         }
     }
@@ -265,7 +266,7 @@ fn enumerate_amd_devices(devices: &mut Vec<ComputeDevice>) {
 /// Identify AMD GPU capabilities
 fn identify_amd_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDevice> {
     // AMD device ID ranges (simplified)
-    let (arch_name, compute_units, caps) = match pci_dev.device_id {
+    let (arch_name, compute_units, caps) = match pci_dev.info.device_id {
         // RDNA 3 (RX 7xxx)
         0x7400..=0x74FF | 0x7440..=0x744F => (
             "RDNA 3",
@@ -302,7 +303,11 @@ fn identify_amd_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDe
         _ => return None,
     };
 
-    let vram_bytes = pci_dev.bar_size(0).unwrap_or(16 * 1024 * 1024 * 1024);
+    // Query VRAM size from BAR0 (default to 16GB if not available)
+    let vram_bytes = {
+        let size = pci_dev.bar_size(0);
+        if size > 0 { size } else { 16 * 1024 * 1024 * 1024 }
+    };
 
     Some(ComputeDevice {
         id: (devices_count() + 1) as u32,
@@ -316,27 +321,29 @@ fn identify_amd_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDe
 
 /// Intel GPU enumeration
 fn enumerate_intel_devices(devices: &mut Vec<ComputeDevice>) {
-    if let Some(pci_devices) = crate::driver::pci::enumerate_devices() {
-        for pci_dev in pci_devices {
-            if pci_dev.vendor_id == PCI_VENDOR_INTEL
-                && pci_dev.class_code == PCI_CLASS_DISPLAY
-            {
-                // Check for discrete GPUs (Arc series) vs integrated
-                if pci_dev.device_id >= 0x5690 && pci_dev.device_id <= 0x56FF {
-                    // Intel Arc discrete GPU
-                    let vram = pci_dev.bar_size(0).unwrap_or(16 * 1024 * 1024 * 1024);
-                    devices.push(ComputeDevice {
-                        id: (devices_count() + 1) as u32,
-                        device_type: AcceleratorType::IntelOneApi,
-                        name: alloc::string::String::from("Intel Arc GPU"),
-                        compute_units: 32,
-                        memory_bytes: vram,
-                        capabilities: DeviceCapabilities::FP16_COMPUTE |
-                            DeviceCapabilities::INT8_COMPUTE |
-                            DeviceCapabilities::TENSOR_CORES |
-                            DeviceCapabilities::ASYNC_COMPUTE,
-                    });
-                }
+    let pci_devices = crate::driver::pci::get_all_devices();
+    for pci_dev in pci_devices {
+        if pci_dev.info.vendor_id == PCI_VENDOR_INTEL
+            && pci_dev.info.class == PCI_CLASS_DISPLAY
+        {
+            // Check for discrete GPUs (Arc series) vs integrated
+            if pci_dev.info.device_id >= 0x5690 && pci_dev.info.device_id <= 0x56FF {
+                // Intel Arc discrete GPU
+                let vram = {
+                    let size = pci_dev.bar_size(0);
+                    if size > 0 { size } else { 16 * 1024 * 1024 * 1024 }
+                };
+                devices.push(ComputeDevice {
+                    id: (devices_count() + 1) as u32,
+                    device_type: AcceleratorType::IntelOneApi,
+                    name: alloc::string::String::from("Intel Arc GPU"),
+                    compute_units: 32,
+                    memory_bytes: vram,
+                    capabilities: DeviceCapabilities::FP16_COMPUTE |
+                        DeviceCapabilities::INT8_COMPUTE |
+                        DeviceCapabilities::TENSOR_CORES |
+                        DeviceCapabilities::ASYNC_COMPUTE,
+                });
             }
         }
     }
@@ -920,7 +927,7 @@ fn migrate_through_cpu(
     // Allocate host staging buffer if needed
     if tensor.host_ptr.is_none() {
         let host_buffer = alloc::vec![0u8; tensor.size_bytes as usize];
-        let ptr = host_buffer.leak().as_mut_ptr() as u64;
+        let ptr = host_buffer.leak().as_mut_ptr();
         tensor.host_ptr = Some(ptr);
     }
 

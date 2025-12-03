@@ -50,9 +50,6 @@
     abi_x86_interrupt,
     allocator_api,
     naked_functions,
-    asm_const,
-    const_mut_refs,
-    inline_const,
     slice_ptr_get,
     strict_provenance,
 )]
@@ -123,6 +120,8 @@ pub mod process;
 pub mod sched;
 #[cfg(not(test))]
 pub mod tensor;
+#[cfg(not(test))]
+pub mod time;
 #[cfg(not(test))]
 pub mod timetravel;
 
