@@ -677,3 +677,154 @@ fn find_npu_device() -> Option<u32> {
             AcceleratorType::AppleAne | AcceleratorType::GoogleTpu))
         .map(|d| d.id)
 }
+
+// ============================================================================
+// Tensor Migration Functions
+// ============================================================================
+
+pub use migration::MigrationStrategy;
+
+/// Global migration scheduler
+static MIGRATION_SCHEDULER: RwLock<migration::MigrationScheduler> =
+    RwLock::new(migration::MigrationScheduler::new_const());
+
+/// Get the device ID where a tensor is currently located
+pub fn get_tensor_device(tensor_id: ObjectId) -> Option<u32> {
+    TENSORS.read().get(&tensor_id).map(|t| t.device_id)
+}
+
+/// Schedule an asynchronous tensor migration
+///
+/// Returns a job ID that can be used to track migration progress.
+pub fn schedule_migration(
+    tensor_id: ObjectId,
+    src_device: u32,
+    dst_device: u32,
+) -> u64 {
+    MIGRATION_SCHEDULER
+        .write()
+        .schedule(tensor_id, src_device, dst_device)
+}
+
+/// Perform synchronous tensor migration
+///
+/// Blocks until migration is complete.
+pub fn migrate_sync(
+    tensor_id: ObjectId,
+    src_device: u32,
+    dst_device: u32,
+    strategy: MigrationStrategy,
+) -> Result<(), TensorError> {
+    // Get the tensor buffer
+    let mut tensors = TENSORS.write();
+    let tensor = tensors.get_mut(&tensor_id).ok_or(TensorError::NotFound)?;
+
+    // Validate source device
+    if tensor.device_id != src_device {
+        return Err(TensorError::DeviceMismatch);
+    }
+
+    // Get device info
+    let devices = DEVICES.read();
+    let dst_dev = devices
+        .iter()
+        .find(|d| d.id == dst_device)
+        .ok_or(TensorError::DeviceNotFound)?;
+
+    // Perform migration based on strategy
+    match strategy {
+        MigrationStrategy::Sync => {
+            // Direct copy through CPU
+            migrate_through_cpu(tensor, dst_device, dst_dev)?;
+        }
+        MigrationStrategy::Staged => {
+            // Copy to host memory first, then to device
+            migrate_through_cpu(tensor, dst_device, dst_dev)?;
+        }
+        MigrationStrategy::Async => {
+            // For sync call, fall back to CPU path
+            migrate_through_cpu(tensor, dst_device, dst_dev)?;
+        }
+        MigrationStrategy::P2P => {
+            // Attempt P2P, fall back to CPU if not available
+            if !try_p2p_migration(tensor, src_device, dst_device) {
+                migrate_through_cpu(tensor, dst_device, dst_dev)?;
+            }
+        }
+    }
+
+    // Update tensor's device ID
+    tensor.device_id = dst_device;
+
+    log::debug!(
+        "Migrated tensor {:?} from device {} to device {}",
+        tensor_id,
+        src_device,
+        dst_device
+    );
+
+    Ok(())
+}
+
+/// Migrate tensor through CPU memory (staging)
+fn migrate_through_cpu(
+    tensor: &mut TensorBuffer,
+    dst_device: u32,
+    dst_dev: &ComputeDevice,
+) -> Result<(), TensorError> {
+    // If tensor is already on CPU, just update device pointer
+    if tensor.device_id == 0 {
+        // Allocate on destination device
+        // For now, we keep the same pointer (placeholder)
+        // Real implementation would call device-specific allocation
+        return Ok(());
+    }
+
+    // Allocate host staging buffer if needed
+    if tensor.host_ptr.is_none() {
+        let host_buffer = alloc::vec![0u8; tensor.size_bytes as usize];
+        let ptr = host_buffer.leak().as_mut_ptr() as u64;
+        tensor.host_ptr = Some(ptr);
+    }
+
+    // Copy from source device to host
+    // (In real implementation, this would use DMA or device API)
+    copy_device_to_host(tensor)?;
+
+    // Copy from host to destination device
+    copy_host_to_device(tensor, dst_device)?;
+
+    Ok(())
+}
+
+/// Try peer-to-peer migration between GPUs
+fn try_p2p_migration(
+    tensor: &mut TensorBuffer,
+    src_device: u32,
+    dst_device: u32,
+) -> bool {
+    // Check if P2P is available between these devices
+    // For now, always return false (not implemented)
+    false
+}
+
+/// Copy tensor data from device to host memory
+fn copy_device_to_host(tensor: &mut TensorBuffer) -> Result<(), TensorError> {
+    // Placeholder - real implementation would use:
+    // - cudaMemcpy for NVIDIA
+    // - hipMemcpy for AMD
+    // - Metal blit for Apple
+    Ok(())
+}
+
+/// Copy tensor data from host to device memory
+fn copy_host_to_device(tensor: &mut TensorBuffer, dst_device: u32) -> Result<(), TensorError> {
+    // Placeholder - real implementation would use device-specific API
+    Ok(())
+}
+
+/// Check migration job status
+pub fn migration_status(job_id: u64) -> Option<migration::MigrationStatus> {
+    // For now, just return completed (async not fully implemented)
+    Some(migration::MigrationStatus::Completed)
+}

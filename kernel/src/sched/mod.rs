@@ -363,6 +363,11 @@ pub fn current_thread_id() -> ThreadId {
     ThreadId(CURRENT_THREAD.load(Ordering::SeqCst))
 }
 
+/// Get current tick count
+pub fn get_tick_count() -> u64 {
+    TICK_COUNT.load(Ordering::SeqCst)
+}
+
 /// Idle when no threads are runnable
 fn idle() {
     // Try to steal work from other CPUs before going idle

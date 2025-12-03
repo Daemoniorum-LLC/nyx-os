@@ -45,6 +45,13 @@ impl MigrationScheduler {
         }
     }
 
+    /// Create a new migration scheduler in const context
+    pub const fn new_const() -> Self {
+        Self {
+            pending: VecDeque::new(),
+        }
+    }
+
     /// Schedule a migration
     pub fn schedule(
         &mut self,

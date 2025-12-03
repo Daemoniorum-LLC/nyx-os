@@ -1,6 +1,6 @@
 //! # Nyx Microkernel
 //!
-//! A formally-verified, capability-based microkernel with AI-native syscalls.
+//! A capability-based microkernel with AI-native syscalls.
 //!
 //! ## Design Principles
 //!
@@ -8,7 +8,7 @@
 //! - **Memory Safety**: Rust everywhere except hardware interfaces
 //! - **Async-First**: io_uring-style completion queues for all IPC
 //! - **AI-Native**: First-class tensor operations and inference syscalls
-//! - **Formally Verified**: Core components proven in Lean 4
+//! - **Rigorously Tested**: Comprehensive test suite with property-based testing
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]

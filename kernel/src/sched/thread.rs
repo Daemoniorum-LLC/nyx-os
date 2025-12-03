@@ -52,6 +52,8 @@ pub enum BlockReason {
     Mutex,
     /// Waiting for semaphore
     Semaphore,
+    /// Waiting for another thread to exit (thread join)
+    Join(ThreadId),
 }
 
 /// Thread control block
@@ -60,6 +62,8 @@ pub struct Thread {
     pub id: ThreadId,
     /// Object ID (for capability system)
     pub object_id: ObjectId,
+    /// Process ID that owns this thread
+    pub process_id: crate::process::ProcessId,
     /// Current state
     pub state: ThreadState,
     /// Address space
@@ -80,6 +84,10 @@ pub struct Thread {
     pub kernel_stack: u64,
     /// User stack pointer
     pub user_stack: u64,
+    /// Exit code when thread terminates
+    pub exit_code: i32,
+    /// Thread we're waiting to join (if any)
+    pub join_target: Option<ThreadId>,
 
     // =========================================================================
     // Process Accounting
@@ -137,6 +145,7 @@ impl Thread {
         Self {
             id: ThreadId::new(),
             object_id: ObjectId::new(ObjectType::Thread),
+            process_id: crate::process::ProcessId(1), // Init is always PID 1
             state: ThreadState::Ready,
             address_space: AddressSpace::new(),
             sched_class: super::SchedClass::Normal,
@@ -147,6 +156,8 @@ impl Thread {
             wake_tick: 0,
             kernel_stack: 0,
             user_stack: 0,
+            exit_code: 0,
+            join_target: None,
             // Accounting
             utime_ns: 0,
             stime_ns: 0,
@@ -158,7 +169,7 @@ impl Thread {
     }
 
     /// Create a new user thread
-    pub fn new_user(entry: u64, stack: u64, address_space: AddressSpace) -> Self {
+    pub fn new_user(entry: u64, stack: u64, address_space: AddressSpace, process_id: crate::process::ProcessId) -> Self {
         let mut regs = RegisterState::default();
         regs.rip = entry;
         regs.rsp = stack;
@@ -169,6 +180,7 @@ impl Thread {
         Self {
             id: ThreadId::new(),
             object_id: ObjectId::new(ObjectType::Thread),
+            process_id,
             state: ThreadState::Ready,
             address_space,
             sched_class: super::SchedClass::Normal,
@@ -179,6 +191,8 @@ impl Thread {
             wake_tick: 0,
             kernel_stack: 0,
             user_stack: stack,
+            exit_code: 0,
+            join_target: None,
             // Accounting
             utime_ns: 0,
             stime_ns: 0,
@@ -253,6 +267,7 @@ impl Thread {
         Self {
             id: ThreadId::new(),
             object_id: ObjectId::new(ObjectType::Thread),
+            process_id: crate::process::ProcessId(0), // Kernel threads belong to PID 0
             state: ThreadState::Ready,
             address_space: AddressSpace::new(), // Uses kernel address space
             sched_class: super::SchedClass::Normal,
@@ -263,6 +278,8 @@ impl Thread {
             wake_tick: 0,
             kernel_stack: stack,
             user_stack: 0,
+            exit_code: 0,
+            join_target: None,
             // Accounting (kernel threads only accumulate stime)
             utime_ns: 0,
             stime_ns: 0,
@@ -425,6 +442,7 @@ mod tests {
             BlockReason::Io,
             BlockReason::Mutex,
             BlockReason::Semaphore,
+            BlockReason::Join(ThreadId(1)),
         ];
 
         // All variants should be distinct
@@ -435,6 +453,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_block_reason_join_different_threads() {
+        let join1 = BlockReason::Join(ThreadId(1));
+        let join2 = BlockReason::Join(ThreadId(2));
+        assert_ne!(join1, join2);
+
+        let join_same = BlockReason::Join(ThreadId(1));
+        assert_eq!(join1, join_same);
     }
 
     // =========================================================================
@@ -680,6 +708,7 @@ mod tests {
         Thread {
             id: ThreadId::new(),
             object_id: crate::cap::ObjectId::new(crate::cap::ObjectType::Thread),
+            process_id: crate::process::ProcessId(1),
             state: ThreadState::Ready,
             address_space: AddressSpace::new(),
             sched_class: super::super::SchedClass::Normal,
@@ -690,6 +719,8 @@ mod tests {
             wake_tick: 0,
             kernel_stack: 0,
             user_stack: 0,
+            exit_code: 0,
+            join_target: None,
             utime_ns: 0,
             stime_ns: 0,
             user_start_ns: 0,

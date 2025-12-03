@@ -138,6 +138,7 @@ pub fn syscall_handler(regs: &mut SyscallRegs) {
         65 => handle_thread_exit(regs),
         66 => handle_thread_yield(regs),
         67 => handle_thread_sleep(regs),
+        68 => handle_thread_join(regs),
 
         // Process syscalls
         80 => handle_process_spawn(regs),
@@ -149,6 +150,7 @@ pub fn syscall_handler(regs: &mut SyscallRegs) {
         // Tensor/AI syscalls
         112 => handle_tensor_alloc(regs),
         113 => handle_tensor_free(regs),
+        114 => handle_tensor_migrate(regs),
         115 => handle_inference_create(regs),
         116 => handle_inference_submit(regs),
 
@@ -554,40 +556,156 @@ fn handle_mem_protect(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     Ok(0)
 }
 
+/// Memory allocation flags
+mod mem_flags {
+    /// Allocate contiguous physical memory (for DMA)
+    pub const CONTIGUOUS: u32 = 1 << 0;
+    /// Zero the allocated memory
+    pub const ZEROED: u32 = 1 << 1;
+    /// Lock pages in memory (no swap)
+    pub const LOCKED: u32 = 1 << 2;
+}
+
 fn handle_mem_alloc(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let size = regs.arg0;
-    let _flags = regs.arg1 as u32;
+    let flags = regs.arg1 as u32;
 
-    // Validate size
+    // Validate size (max 1GB per allocation)
     if size == 0 || size > 1024 * 1024 * 1024 {
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Allocate required number of physical frames
-    let num_pages = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+    // Get current process
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+    let mut proc_guard =
+        crate::process::get_process_mut(pid).ok_or(SyscallError::InvalidCapability)?;
 
-    // For contiguous allocation, use alloc_frames
-    let frame = crate::mem::alloc_frames(num_pages).ok_or(SyscallError::OutOfMemory)?;
+    // Find a free virtual address region for this allocation
+    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let virt_addr = find_free_region(&proc_guard.address_space, aligned_size)?;
 
-    Ok(frame.as_u64())
+    // Determine protection (RW for allocated memory, user-accessible)
+    let protection = crate::mem::virt::Protection::READ
+        | crate::mem::virt::Protection::WRITE
+        | crate::mem::virt::Protection::USER;
+
+    // Allocate physical frames and map them
+    let num_pages = (aligned_size / PAGE_SIZE) as usize;
+
+    if flags & mem_flags::CONTIGUOUS != 0 {
+        // Allocate contiguous physical memory (for DMA buffers)
+        let phys_base = crate::mem::alloc_frames(num_pages).ok_or(SyscallError::OutOfMemory)?;
+
+        // Map all pages contiguously
+        for i in 0..num_pages {
+            let page_virt = VirtAddr::new(virt_addr.as_u64() + (i as u64) * PAGE_SIZE);
+            let page_phys = crate::mem::PhysAddr::new(phys_base.as_u64() + (i as u64) * PAGE_SIZE);
+
+            // Zero the page if requested
+            if flags & mem_flags::ZEROED != 0 {
+                let virt_ptr = crate::mem::phys_to_virt(page_phys) as *mut u8;
+                // SAFETY: phys_to_virt gives kernel-mapped address, we own this frame
+                unsafe {
+                    core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
+                }
+            }
+
+            proc_guard
+                .address_space
+                .map_page(page_virt, page_phys, protection)
+                .map_err(|_| SyscallError::OutOfMemory)?;
+        }
+
+        // Track this allocation for ownership verification during free
+        proc_guard.track_allocation(virt_addr, aligned_size, true);
+    } else {
+        // Allocate individual frames (may not be physically contiguous)
+        for i in 0..num_pages {
+            let page_virt = VirtAddr::new(virt_addr.as_u64() + (i as u64) * PAGE_SIZE);
+            let page_phys = crate::mem::alloc_frame().ok_or(SyscallError::OutOfMemory)?;
+
+            // Zero the page if requested
+            if flags & mem_flags::ZEROED != 0 {
+                let virt_ptr = crate::mem::phys_to_virt(page_phys) as *mut u8;
+                // SAFETY: phys_to_virt gives kernel-mapped address, we own this frame
+                unsafe {
+                    core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
+                }
+            }
+
+            proc_guard
+                .address_space
+                .map_page(page_virt, page_phys, protection)
+                .map_err(|_| SyscallError::OutOfMemory)?;
+        }
+
+        // Track this allocation
+        proc_guard.track_allocation(virt_addr, aligned_size, false);
+    }
+
+    // Update memory statistics
+    proc_guard.mem_stats.vm_size += aligned_size;
+    proc_guard.mem_stats.rss += aligned_size;
+
+    // Return the VIRTUAL address (not physical!) - this is the secure approach
+    Ok(virt_addr.as_u64())
 }
 
 fn handle_mem_free(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let addr = regs.arg0;
     let size = regs.arg1;
 
-    // Validate the address looks like a physical frame we allocated
-    // (In a full implementation, we'd track allocations)
-    if addr == 0 {
+    // Validate address is in userspace range
+    if addr == 0 || addr >= 0x0000_8000_0000_0000 || addr < 0x1000 {
         return Err(SyscallError::BadAddress);
     }
 
-    // Free the frames
-    let num_pages = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-    for i in 0..num_pages {
-        let frame_addr = crate::mem::PhysAddr::new(addr + (i as u64) * PAGE_SIZE);
-        crate::mem::free_frame(frame_addr);
+    // Validate size
+    if size == 0 {
+        return Err(SyscallError::InvalidArgument);
     }
+
+    // Get current process
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+    let mut proc_guard =
+        crate::process::get_process_mut(pid).ok_or(SyscallError::InvalidCapability)?;
+
+    let virt_addr = VirtAddr::new(addr);
+    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+
+    // CRITICAL: Verify this process owns this allocation
+    // This prevents use-after-free and freeing other processes' memory
+    if !proc_guard.verify_allocation(virt_addr, aligned_size) {
+        log::warn!(
+            "Process {} attempted to free unowned memory at {:#x} (size {})",
+            pid.raw(),
+            addr,
+            size
+        );
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Unmap pages and free physical frames
+    let num_pages = (aligned_size / PAGE_SIZE) as usize;
+    for i in 0..num_pages {
+        let page_virt = VirtAddr::new(addr + (i as u64) * PAGE_SIZE);
+
+        // Translate to physical address before unmapping
+        if let Some(phys_addr) = proc_guard.address_space.translate(page_virt) {
+            // Unmap the page from the address space
+            let _ = proc_guard.address_space.unmap(page_virt, PAGE_SIZE);
+
+            // Free the physical frame
+            crate::mem::free_frame(phys_addr);
+        }
+    }
+
+    // Remove from allocation tracking
+    proc_guard.untrack_allocation(virt_addr);
+
+    // Update memory statistics
+    proc_guard.mem_stats.vm_size = proc_guard.mem_stats.vm_size.saturating_sub(aligned_size);
+    proc_guard.mem_stats.rss = proc_guard.mem_stats.rss.saturating_sub(aligned_size);
 
     Ok(0)
 }
@@ -722,6 +840,131 @@ fn handle_thread_sleep(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     Ok(0)
 }
 
+/// Thread join syscall
+///
+/// Blocks the calling thread until the target thread exits.
+/// Returns the exit code of the target thread.
+///
+/// Arguments:
+/// - arg0: Target thread ID to wait for
+/// - arg1: Timeout in nanoseconds (u64::MAX = infinite)
+///
+/// Returns:
+/// - Exit code of the joined thread on success
+/// - Error code on failure
+fn handle_thread_join(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let target_tid = ThreadId(regs.arg0);
+    let timeout_ns = regs.arg1;
+
+    // Get current thread ID
+    let current_tid = crate::sched::current_thread_id();
+
+    // Cannot join self
+    if target_tid == current_tid {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Check if target thread exists and get its process
+    let (target_pid, target_state, exit_code) = {
+        let threads = crate::sched::THREADS.read();
+        match threads.get(&target_tid) {
+            Some(thread) => {
+                let is_terminated = matches!(thread.state, ThreadState::Terminated);
+                (thread.process_id, thread.state, if is_terminated { thread.exit_code } else { 0 })
+            }
+            None => return Err(SyscallError::NotFound),
+        }
+    };
+
+    // Get current thread's process
+    let current_pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+
+    // For security, only allow joining threads in the same process
+    // or child processes (to prevent information leaks)
+    if target_pid != current_pid {
+        // Check if target is a child process thread
+        let is_child = {
+            let proc = crate::process::get_process(current_pid);
+            proc.is_some_and(|p| p.children.contains(&target_pid))
+        };
+        if !is_child {
+            return Err(SyscallError::PermissionDenied);
+        }
+    }
+
+    // If target thread is already terminated, return its exit code immediately
+    if matches!(target_state, ThreadState::Terminated) {
+        return Ok(exit_code as u64);
+    }
+
+    // Register as a waiter on the target thread
+    {
+        let mut proc_guard = crate::process::get_process_mut(target_pid)
+            .ok_or(SyscallError::NotFound)?;
+        proc_guard.add_join_waiter(target_tid, current_tid);
+    }
+
+    // Block current thread until target exits or timeout
+    let timeout = if timeout_ns == u64::MAX {
+        None
+    } else {
+        Some(Duration::from_nanos(timeout_ns))
+    };
+
+    // Set up the block
+    {
+        let mut threads = crate::sched::THREADS.write();
+        if let Some(current) = threads.get_mut(&current_tid) {
+            current.state = ThreadState::Blocked(crate::sched::BlockReason::Join(target_tid));
+            current.join_target = Some(target_tid);
+        }
+    }
+
+    // If we have a timeout, set up a timer
+    if let Some(duration) = timeout {
+        let wake_tick = crate::sched::get_tick_count() + (duration.as_millis() as u64 / 10);
+        let cpu_id = crate::sched::current_cpu_id() as usize;
+        let mut per_cpu = crate::sched::PER_CPU.write();
+        if let Some(cpu_sched) = per_cpu.get_mut(cpu_id) {
+            cpu_sched.add_to_timer_queue(current_tid, wake_tick);
+        }
+    }
+
+    // Trigger reschedule - this will switch to another thread
+    crate::sched::schedule();
+
+    // When we wake up, check why
+    let (joined_exit_code, was_timeout) = {
+        let threads = crate::sched::THREADS.read();
+        if let Some(current) = threads.get(&current_tid) {
+            // Check if we woke up due to the target exiting or timeout
+            let target = threads.get(&target_tid);
+            match target {
+                Some(t) if matches!(t.state, ThreadState::Terminated) => {
+                    (t.exit_code, false)
+                }
+                _ => (0, true), // Target not found or not terminated = timeout
+            }
+        } else {
+            (0, true)
+        }
+    };
+
+    // Clear join target
+    {
+        let mut threads = crate::sched::THREADS.write();
+        if let Some(current) = threads.get_mut(&current_tid) {
+            current.join_target = None;
+        }
+    }
+
+    if was_timeout && timeout.is_some() {
+        return Err(SyscallError::Timeout);
+    }
+
+    Ok(joined_exit_code as u64)
+}
+
 // ============================================================================
 // Process Syscall Handlers
 // ============================================================================
@@ -854,6 +1097,69 @@ fn handle_tensor_free(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     match crate::tensor::tensor_free(cap) {
         Ok(_) => Ok(0),
         Err(_) => Err(SyscallError::InvalidCapability),
+    }
+}
+
+/// Migrate tensor to a different device
+///
+/// Arguments:
+/// - arg0: Tensor capability
+/// - arg1: Target device ID (0 = CPU, 1-N = GPU/NPU)
+/// - arg2: Flags (0 = sync, 1 = async)
+///
+/// Returns:
+/// - Job ID for async migrations (> 0)
+/// - 0 for sync migrations that completed
+/// - Negative error code on failure
+fn handle_tensor_migrate(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let tensor_cap = regs.arg0;
+    let target_device = regs.arg1 as u32;
+    let flags = regs.arg2 as u32;
+
+    // Validate device ID (max 16 devices)
+    const MAX_DEVICES: u32 = 16;
+    if target_device >= MAX_DEVICES {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Create capability from raw ID
+    let tensor_id = ObjectId::from_raw(tensor_cap);
+    let cap = unsafe {
+        Capability::new_unchecked(tensor_id, Rights::TENSOR_MIGRATE)
+    };
+
+    // Check capability rights
+    if !cap.rights().contains(Rights::TENSOR_MIGRATE) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Get current device for the tensor
+    let current_device = match crate::tensor::get_tensor_device(tensor_id) {
+        Some(dev) => dev,
+        None => return Err(SyscallError::InvalidCapability),
+    };
+
+    // If already on target device, no-op
+    if current_device == target_device {
+        return Ok(0);
+    }
+
+    // Choose migration strategy
+    let strategy = crate::tensor::migration::choose_strategy(current_device, target_device);
+
+    // Flag bit 0: async migration
+    let is_async = (flags & 1) != 0;
+
+    if is_async {
+        // Schedule asynchronous migration
+        let job_id = crate::tensor::schedule_migration(tensor_id, current_device, target_device);
+        Ok(job_id)
+    } else {
+        // Perform synchronous migration
+        match crate::tensor::migrate_sync(tensor_id, current_device, target_device, strategy) {
+            Ok(_) => Ok(0),
+            Err(_) => Err(SyscallError::IoError),
+        }
     }
 }
 

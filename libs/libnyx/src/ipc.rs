@@ -1437,24 +1437,44 @@ pub mod ring_flags {
 ///     handle_completion(cqe);
 /// }
 /// ```
+///
+/// # Safety Guarantees
+///
+/// The raw pointers in this struct point to kernel-mapped shared memory.
+/// The memory is guaranteed to remain valid as long as:
+///
+/// 1. The `handle` capability is valid (not revoked)
+/// 2. The kernel ring hasn't been destroyed
+///
+/// The kernel guarantees that the mapped memory region lives as long as the
+/// capability, so dropping this struct (which closes the capability) is the
+/// only way the pointers can become invalid.
+///
+/// # Thread Safety
+///
+/// This struct is explicitly `!Sync` because the ring is designed for
+/// single-issuer use. Only one thread should submit at a time. Multiple
+/// threads may safely move the ring between them (hence `Send`).
 pub struct PollingRing {
-    /// Ring capability
+    /// Ring capability - dropping this invalidates all pointers
     handle: Capability,
-    /// Submission queue head (shared with kernel)
+    /// Submission queue head (shared with kernel, read-only for userspace)
     sq_head: *const AtomicU64,
-    /// Submission queue tail (userspace owned)
+    /// Submission queue tail (userspace owned, write for userspace)
     sq_tail: *mut AtomicU64,
-    /// Completion queue head (userspace owned)
+    /// Completion queue head (userspace owned, write for userspace)
     cq_head: *mut AtomicU64,
-    /// Completion queue tail (shared with kernel)
+    /// Completion queue tail (shared with kernel, read-only for userspace)
     cq_tail: *const AtomicU64,
-    /// Submission queue entries
+    /// Submission queue entries array
     sq_entries: *mut SubmissionEntry,
-    /// Completion queue entries
+    /// Completion queue entries array
     cq_entries: *const CompletionEntry,
-    /// Queue size mask
+    /// Queue size mask (size - 1)
     sq_mask: u32,
     cq_mask: u32,
+    /// Marker to prevent Sync (only Send is safe)
+    _not_sync: core::marker::PhantomData<*mut ()>,
 }
 
 impl PollingRing {
@@ -1505,6 +1525,7 @@ impl PollingRing {
             cq_entries: ring_info.cq_entries as *const CompletionEntry,
             sq_mask: sq_size - 1,
             cq_mask: cq_size - 1,
+            _not_sync: core::marker::PhantomData,
         })
     }
 
@@ -1576,8 +1597,34 @@ impl PollingRing {
     }
 }
 
-// SAFETY: PollingRing uses atomic operations and is designed for single-issuer use
+// SAFETY: PollingRing can be safely sent between threads because:
+//
+// 1. All pointer targets are in kernel-managed memory that lives as long as the
+//    capability handle (which is owned by this struct)
+// 2. All shared state is accessed through AtomicU64 with appropriate orderings
+// 3. The struct is `!Sync` (enforced by PhantomData<*mut ()>), so no concurrent
+//    access from multiple threads is possible
+// 4. Moving the ring between threads is safe because the kernel doesn't care
+//    which thread issues operations (it's capability-based, not thread-based)
+//
+// Note: This is NOT Sync because the ring protocol assumes single-issuer semantics.
+// Concurrent submissions from multiple threads would corrupt the queue state.
 unsafe impl Send for PollingRing {}
+
+impl Drop for PollingRing {
+    fn drop(&mut self) {
+        // Close the ring capability, which tells the kernel to:
+        // 1. Stop the polling thread (if any)
+        // 2. Unmap the shared memory region
+        // 3. Free kernel resources
+        //
+        // After this, all pointers in this struct become invalid,
+        // but that's okay because the struct is being dropped.
+        let _ = unsafe {
+            syscall::syscall1(nr::RING_DESTROY, self.handle.as_raw())
+        };
+    }
+}
 
 /// Ring memory mapping information
 #[repr(C)]
