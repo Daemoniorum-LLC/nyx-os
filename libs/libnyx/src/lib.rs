@@ -67,6 +67,7 @@ pub mod syscall;
 pub mod tensor;
 pub mod thread;
 pub mod time;
+pub mod timetravel;
 
 // Re-export commonly used types at the crate root
 pub use cap::{Capability, ObjectType, Rights};
@@ -94,6 +95,7 @@ pub use syscall::Error;
 pub use tensor::{DType, Device, InferenceConfig, TensorBuffer, TensorShape};
 pub use thread::ThreadId;
 pub use time::Instant;
+pub use timetravel::{CheckpointFlags, CheckpointId, RecordFlags, RecordingId, RestoreFlags};
 
 /// Prelude module for convenient imports
 pub mod prelude {
@@ -111,4 +113,8 @@ pub mod prelude {
     pub use crate::tensor::{self, Device, DType, TensorBuffer, TensorShape};
     pub use crate::thread::{self, sleep_ms, sleep_secs, thread_yield, ThreadId};
     pub use crate::time::{self, now_ms, now_ns, Instant};
+    pub use crate::timetravel::{
+        self, checkpoint, record_start, record_stop, restore,
+        CheckpointFlags, CheckpointId, RecordFlags, RecordingId, RestoreFlags,
+    };
 }

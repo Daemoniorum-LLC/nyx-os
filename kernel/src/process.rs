@@ -382,6 +382,7 @@ pub fn spawn(args: SpawnArgs) -> Result<ProcessId, SpawnError> {
         entry_point,
         stack_top,
         proc.address_space.clone(),
+        proc.pid,
     );
     let thread_id = thread.id;
 
@@ -457,33 +458,48 @@ fn load_executable(path: &str, proc: &mut Process) -> Result<u64, SpawnError> {
             let page_vaddr = VirtAddr::new(start_page.as_u64() + i as u64 * PAGE_SIZE);
             let frame = crate::mem::alloc_frame().ok_or(SpawnError::OutOfMemory)?;
 
-            // Zero the frame first
+            // Get the kernel-mapped virtual address for this physical frame
+            // This is safe because the kernel has all physical memory mapped
+            let kernel_vaddr = crate::mem::phys_to_virt(frame);
+
+            // Zero the frame first using the kernel virtual address
+            // SAFETY: kernel_vaddr points to valid kernel-mapped memory for this frame
             unsafe {
-                let ptr = frame.as_u64() as *mut u8;
+                let ptr = kernel_vaddr as *mut u8;
                 core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
             }
 
             // Copy file data if applicable
-            let page_offset = page_vaddr.as_u64() - vaddr.as_u64();
-            if page_offset < filesz {
-                let copy_start = offset + page_offset as usize;
-                let copy_len = core::cmp::min(PAGE_SIZE, filesz - page_offset) as usize;
-                if copy_start + copy_len <= data.len() {
+            let page_start_in_segment = if page_vaddr.as_u64() >= vaddr.as_u64() {
+                0u64
+            } else {
+                vaddr.as_u64() - page_vaddr.as_u64()
+            };
+            let page_end_in_segment = PAGE_SIZE;
+
+            // Calculate file offset for this page
+            let segment_offset_start = page_vaddr.as_u64().saturating_sub(vaddr.as_u64());
+            if segment_offset_start < filesz {
+                let file_start = offset + segment_offset_start as usize;
+                let copy_len = core::cmp::min(
+                    PAGE_SIZE - page_start_in_segment,
+                    filesz.saturating_sub(segment_offset_start),
+                ) as usize;
+
+                if file_start + copy_len <= data.len() && copy_len > 0 {
+                    // SAFETY: We're copying into kernel-mapped memory from a valid slice
                     unsafe {
-                        let dst = frame.as_u64() as *mut u8;
-                        let src = data.as_ptr().add(copy_start);
+                        let dst = (kernel_vaddr + page_start_in_segment) as *mut u8;
+                        let src = data.as_ptr().add(file_start);
                         core::ptr::copy_nonoverlapping(src, dst, copy_len);
                     }
                 }
             }
 
-            // Map the page
-            proc.address_space.map(
-                page_vaddr,
-                PAGE_SIZE,
-                prot,
-                crate::mem::virt::VmaBacking::Anonymous,
-            ).map_err(|_| SpawnError::OutOfMemory)?;
+            // Map the physical frame into the process's address space
+            proc.address_space
+                .map_page(page_vaddr, frame, prot)
+                .map_err(|_| SpawnError::OutOfMemory)?;
         }
 
         // Update memory stats
@@ -515,18 +531,20 @@ fn setup_user_stack(
         let page_vaddr = VirtAddr::new(stack_base.as_u64() + i as u64 * PAGE_SIZE);
         let frame = crate::mem::alloc_frame().ok_or(SpawnError::OutOfMemory)?;
 
-        // Zero the frame
+        // Get the kernel-mapped virtual address for this physical frame
+        let kernel_vaddr = crate::mem::phys_to_virt(frame);
+
+        // Zero the frame using the kernel virtual address
+        // SAFETY: kernel_vaddr points to valid kernel-mapped memory for this frame
         unsafe {
-            let ptr = frame.as_u64() as *mut u8;
+            let ptr = kernel_vaddr as *mut u8;
             core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
         }
 
-        proc.address_space.map(
-            page_vaddr,
-            PAGE_SIZE,
-            prot,
-            crate::mem::virt::VmaBacking::Anonymous,
-        ).map_err(|_| SpawnError::OutOfMemory)?;
+        // Map the physical frame into the process's address space
+        proc.address_space
+            .map_page(page_vaddr, frame, prot)
+            .map_err(|_| SpawnError::OutOfMemory)?;
     }
 
     proc.mem_stats.vm_size += stack_size;
