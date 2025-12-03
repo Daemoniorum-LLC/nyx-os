@@ -53,10 +53,10 @@ members = [
     "herald",       # Notifications
 
     # Next-Gen GUI Applications
-    # "nyx-shell",      # Desktop shell - excluded, requires iced 0.13
-    # "nyx-control",    # Quick settings - excluded, requires iced 0.13
-    # "nyx-assistant",  # AI command palette - excluded, requires iced 0.13
-    # "nyx-settings",   # System settings - excluded, requires iced 0.13
+    "nyx-shell",      # Desktop shell
+    "nyx-control",    # Quick settings
+    "nyx-assistant",  # AI command palette
+    "nyx-settings",   # System settings
 
     # AI-powered agents
     "agents/guardian",   # Security policy
