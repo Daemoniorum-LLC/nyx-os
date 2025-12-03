@@ -263,6 +263,25 @@ pub fn readdir(path: &str) -> Result<Vec<DirEntry>, FsError> {
     Err(FsError::NotMounted)
 }
 
+/// Read from a file by object ID at a specific offset
+///
+/// This is used for memory-mapped file access during page faults.
+pub fn read_at(file_id: ObjectId, offset: u64, buffer: &mut [u8]) -> Result<usize, FsError> {
+    // Look up the file handle by object ID
+    let handles = OPEN_FILES.read();
+    let handle = handles.get(&file_id).ok_or(FsError::NotFound)?;
+
+    // Read from the file at the given offset
+    if let Some(initrd) = INITRD.read().as_ref() {
+        return initrd.read_at(&handle.path, offset, buffer);
+    }
+
+    Err(FsError::NotMounted)
+}
+
+/// Global open file handle registry
+static OPEN_FILES: RwLock<BTreeMap<ObjectId, FileHandle>> = RwLock::new(BTreeMap::new());
+
 /// Check if a path exists
 pub fn exists(path: &str) -> bool {
     stat(path).is_ok()

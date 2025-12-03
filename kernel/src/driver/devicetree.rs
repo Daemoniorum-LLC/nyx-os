@@ -3,7 +3,8 @@
 //! Provides access to Flattened Device Tree for hardware discovery,
 //! primarily used on ARM and Apple Silicon platforms.
 
-use alloc::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use spin::{Lazy, RwLock};
 

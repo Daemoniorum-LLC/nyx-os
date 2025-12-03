@@ -210,6 +210,11 @@ pub mod nr {
     /// Returns: bytes received
     pub const RECV_REGISTERED: u64 = 14;
 
+    /// Destroy an IPC ring and release its resources
+    /// Args: ring_cap
+    /// Returns: 0 on success
+    pub const RING_DESTROY: u64 = 15;
+
     // ========================================================================
     // Capabilities (16-31)
     // ========================================================================

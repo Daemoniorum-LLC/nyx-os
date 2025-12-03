@@ -349,3 +349,65 @@ impl Default for EventGroup {
         Self::new()
     }
 }
+
+// ============================================================================
+// Module-level functions for IPC integration
+// ============================================================================
+
+use crate::cap::ObjectId;
+use alloc::collections::BTreeMap;
+use spin::RwLock;
+
+/// Global notification registry
+static NOTIFICATIONS: RwLock<BTreeMap<ObjectId, Notification>> = RwLock::new(BTreeMap::new());
+
+/// Signal a notification by its ObjectId
+///
+/// This is called from the network driver notification system and other
+/// kernel subsystems that need to signal notifications by ID.
+pub fn signal(notif_id: ObjectId, bits: u64) -> Result<(), super::IpcError> {
+    let notifications = NOTIFICATIONS.read();
+    let notification = notifications
+        .get(&notif_id)
+        .ok_or(super::IpcError::InvalidEndpoint)?;
+
+    notification.signal(bits);
+    Ok(())
+}
+
+/// Register a notification in the global registry
+pub fn register(id: ObjectId, notification: Notification) {
+    NOTIFICATIONS.write().insert(id, notification);
+}
+
+/// Unregister a notification from the global registry
+pub fn unregister(id: ObjectId) -> Option<Notification> {
+    NOTIFICATIONS.write().remove(&id)
+}
+
+/// Get a reference to a notification (for internal use)
+pub fn get(id: ObjectId) -> Option<NotificationRef> {
+    if NOTIFICATIONS.read().contains_key(&id) {
+        Some(NotificationRef { id })
+    } else {
+        None
+    }
+}
+
+/// Reference to a notification in the registry
+pub struct NotificationRef {
+    id: ObjectId,
+}
+
+impl NotificationRef {
+    pub fn signal(&self, bits: u64) -> Result<(), super::IpcError> {
+        signal(self.id, bits)
+    }
+
+    pub fn peek(&self) -> u64 {
+        NOTIFICATIONS.read()
+            .get(&self.id)
+            .map(|n| n.peek())
+            .unwrap_or(0)
+    }
+}

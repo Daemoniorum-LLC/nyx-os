@@ -259,12 +259,14 @@ impl CallEndpoint {
 
         // Wait for response
         let responses = self.responses.lock();
-        if let Some(resp_endpoint) = responses.get(&thread_id) {
+        if responses.get(&thread_id).is_some() {
             drop(responses);
-            // Need to get it again without holding the lock
+            // Reacquire lock and receive
             let responses = self.responses.lock();
-            let resp_endpoint = responses.get(&thread_id).unwrap();
-            return resp_endpoint.receive();
+            if let Some(resp_endpoint) = responses.get(&thread_id) {
+                return resp_endpoint.receive();
+            }
+            return Err(IpcError::Disconnected);
         }
 
         Err(IpcError::InternalError)

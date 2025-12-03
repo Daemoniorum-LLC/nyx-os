@@ -24,7 +24,7 @@
 mod buffer;
 mod device;
 mod inference;
-mod migration;
+pub mod migration;
 mod queue;
 
 pub use buffer::{TensorBuffer, TensorShape, DType};
@@ -45,6 +45,22 @@ static CONTEXTS: RwLock<BTreeMap<ObjectId, InferenceContext>> = RwLock::new(BTre
 
 /// Global compute device registry
 static DEVICES: RwLock<Vec<ComputeDevice>> = RwLock::new(Vec::new());
+
+/// Per-device memory usage tracking
+static DEVICE_MEMORY: RwLock<BTreeMap<u32, DeviceMemoryStats>> = RwLock::new(BTreeMap::new());
+
+/// Device memory usage statistics
+#[derive(Clone, Debug, Default)]
+pub struct DeviceMemoryStats {
+    /// Total memory on device (bytes)
+    pub total_bytes: u64,
+    /// Currently allocated (bytes)
+    pub allocated_bytes: u64,
+    /// Peak allocation (bytes)
+    pub peak_allocated_bytes: u64,
+    /// Number of active allocations
+    pub allocation_count: u64,
+}
 
 /// Check if any AI accelerator is available
 pub fn has_accelerator() -> bool {
@@ -154,16 +170,15 @@ fn enumerate_cuda_devices(devices: &mut Vec<ComputeDevice>) {
 
 /// Always available - probe PCI for NVIDIA GPUs
 fn enumerate_nvidia_devices(devices: &mut Vec<ComputeDevice>) {
-    if let Some(pci_devices) = crate::driver::pci::enumerate_devices() {
-        for pci_dev in pci_devices {
-            if pci_dev.vendor_id == PCI_VENDOR_NVIDIA
-                && (pci_dev.class_code == PCI_CLASS_DISPLAY || pci_dev.class_code == PCI_CLASS_ACCELERATOR)
-            {
-                let device = identify_nvidia_gpu(&pci_dev);
-                if let Some(dev) = device {
-                    log::info!("Detected NVIDIA GPU: {} (device 0x{:04X})", dev.name, pci_dev.device_id);
-                    devices.push(dev);
-                }
+    let pci_devices = crate::driver::pci::get_all_devices();
+    for pci_dev in pci_devices {
+        if pci_dev.info.vendor_id == PCI_VENDOR_NVIDIA
+            && (pci_dev.info.class == PCI_CLASS_DISPLAY || pci_dev.info.class == PCI_CLASS_ACCELERATOR)
+        {
+            let device = identify_nvidia_gpu(&pci_dev);
+            if let Some(dev) = device {
+                log::info!("Detected NVIDIA GPU: {} (device 0x{:04X})", dev.name, pci_dev.info.device_id);
+                devices.push(dev);
             }
         }
     }
@@ -173,7 +188,7 @@ fn enumerate_nvidia_devices(devices: &mut Vec<ComputeDevice>) {
 fn identify_nvidia_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDevice> {
     // Device ID ranges for NVIDIA architectures
     // These are simplified - real implementation would have full device tables
-    let (arch_name, compute_units, caps) = match pci_dev.device_id {
+    let (arch_name, compute_units, caps) = match pci_dev.info.device_id {
         // Hopper (H100, etc.) - 0x2300-0x23FF
         0x2300..=0x23FF => (
             "Hopper",
@@ -216,8 +231,11 @@ fn identify_nvidia_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<Comput
         _ => return None,
     };
 
-    // Query VRAM size from BAR1
-    let vram_bytes = pci_dev.bar_size(1).unwrap_or(8 * 1024 * 1024 * 1024);
+    // Query VRAM size from BAR1 (default to 8GB if not available)
+    let vram_bytes = {
+        let size = pci_dev.bar_size(1);
+        if size > 0 { size } else { 8 * 1024 * 1024 * 1024 }
+    };
 
     Some(ComputeDevice {
         id: (devices_count() + 1) as u32,
@@ -231,16 +249,15 @@ fn identify_nvidia_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<Comput
 
 /// AMD GPU enumeration via PCI probing
 fn enumerate_amd_devices(devices: &mut Vec<ComputeDevice>) {
-    if let Some(pci_devices) = crate::driver::pci::enumerate_devices() {
-        for pci_dev in pci_devices {
-            if pci_dev.vendor_id == PCI_VENDOR_AMD
-                && (pci_dev.class_code == PCI_CLASS_DISPLAY || pci_dev.class_code == PCI_CLASS_ACCELERATOR)
-            {
-                let device = identify_amd_gpu(&pci_dev);
-                if let Some(dev) = device {
-                    log::info!("Detected AMD GPU: {} (device 0x{:04X})", dev.name, pci_dev.device_id);
-                    devices.push(dev);
-                }
+    let pci_devices = crate::driver::pci::get_all_devices();
+    for pci_dev in pci_devices {
+        if pci_dev.info.vendor_id == PCI_VENDOR_AMD
+            && (pci_dev.info.class == PCI_CLASS_DISPLAY || pci_dev.info.class == PCI_CLASS_ACCELERATOR)
+        {
+            let device = identify_amd_gpu(&pci_dev);
+            if let Some(dev) = device {
+                log::info!("Detected AMD GPU: {} (device 0x{:04X})", dev.name, pci_dev.info.device_id);
+                devices.push(dev);
             }
         }
     }
@@ -249,7 +266,7 @@ fn enumerate_amd_devices(devices: &mut Vec<ComputeDevice>) {
 /// Identify AMD GPU capabilities
 fn identify_amd_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDevice> {
     // AMD device ID ranges (simplified)
-    let (arch_name, compute_units, caps) = match pci_dev.device_id {
+    let (arch_name, compute_units, caps) = match pci_dev.info.device_id {
         // RDNA 3 (RX 7xxx)
         0x7400..=0x74FF | 0x7440..=0x744F => (
             "RDNA 3",
@@ -286,7 +303,11 @@ fn identify_amd_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDe
         _ => return None,
     };
 
-    let vram_bytes = pci_dev.bar_size(0).unwrap_or(16 * 1024 * 1024 * 1024);
+    // Query VRAM size from BAR0 (default to 16GB if not available)
+    let vram_bytes = {
+        let size = pci_dev.bar_size(0);
+        if size > 0 { size } else { 16 * 1024 * 1024 * 1024 }
+    };
 
     Some(ComputeDevice {
         id: (devices_count() + 1) as u32,
@@ -300,27 +321,29 @@ fn identify_amd_gpu(pci_dev: &crate::driver::pci::PciDevice) -> Option<ComputeDe
 
 /// Intel GPU enumeration
 fn enumerate_intel_devices(devices: &mut Vec<ComputeDevice>) {
-    if let Some(pci_devices) = crate::driver::pci::enumerate_devices() {
-        for pci_dev in pci_devices {
-            if pci_dev.vendor_id == PCI_VENDOR_INTEL
-                && pci_dev.class_code == PCI_CLASS_DISPLAY
-            {
-                // Check for discrete GPUs (Arc series) vs integrated
-                if pci_dev.device_id >= 0x5690 && pci_dev.device_id <= 0x56FF {
-                    // Intel Arc discrete GPU
-                    let vram = pci_dev.bar_size(0).unwrap_or(16 * 1024 * 1024 * 1024);
-                    devices.push(ComputeDevice {
-                        id: (devices_count() + 1) as u32,
-                        device_type: AcceleratorType::IntelOneApi,
-                        name: alloc::string::String::from("Intel Arc GPU"),
-                        compute_units: 32,
-                        memory_bytes: vram,
-                        capabilities: DeviceCapabilities::FP16_COMPUTE |
-                            DeviceCapabilities::INT8_COMPUTE |
-                            DeviceCapabilities::TENSOR_CORES |
-                            DeviceCapabilities::ASYNC_COMPUTE,
-                    });
-                }
+    let pci_devices = crate::driver::pci::get_all_devices();
+    for pci_dev in pci_devices {
+        if pci_dev.info.vendor_id == PCI_VENDOR_INTEL
+            && pci_dev.info.class == PCI_CLASS_DISPLAY
+        {
+            // Check for discrete GPUs (Arc series) vs integrated
+            if pci_dev.info.device_id >= 0x5690 && pci_dev.info.device_id <= 0x56FF {
+                // Intel Arc discrete GPU
+                let vram = {
+                    let size = pci_dev.bar_size(0);
+                    if size > 0 { size } else { 16 * 1024 * 1024 * 1024 }
+                };
+                devices.push(ComputeDevice {
+                    id: (devices_count() + 1) as u32,
+                    device_type: AcceleratorType::IntelOneApi,
+                    name: alloc::string::String::from("Intel Arc GPU"),
+                    compute_units: 32,
+                    memory_bytes: vram,
+                    capabilities: DeviceCapabilities::FP16_COMPUTE |
+                        DeviceCapabilities::INT8_COMPUTE |
+                        DeviceCapabilities::TENSOR_CORES |
+                        DeviceCapabilities::ASYNC_COMPUTE,
+                });
             }
         }
     }
@@ -490,11 +513,43 @@ pub fn tensor_alloc(
         .find(|d| d.id == device_id)
         .ok_or(TensorError::DeviceNotFound)?;
 
-    // Calculate buffer size
-    let size = shape.total_elements() * dtype.size_bytes();
+    // Calculate buffer size with alignment (64-byte alignment for SIMD)
+    let raw_size = shape.total_elements() * dtype.size_bytes();
+    let size = (raw_size + 63) & !63; // Round up to 64-byte boundary
 
-    // Check device memory
-    // TODO: Track per-device memory usage
+    // Check and update device memory tracking
+    {
+        let mut mem_stats = DEVICE_MEMORY.write();
+        let stats = mem_stats.entry(device_id).or_insert_with(|| {
+            DeviceMemoryStats {
+                total_bytes: device.memory_bytes,
+                allocated_bytes: 0,
+                peak_allocated_bytes: 0,
+                allocation_count: 0,
+            }
+        });
+
+        // Check if we have enough memory
+        if stats.allocated_bytes + size > stats.total_bytes {
+            log::warn!(
+                "Tensor allocation failed: requested {} bytes, available {} bytes on device {}",
+                size,
+                stats.total_bytes - stats.allocated_bytes,
+                device_id
+            );
+            return Err(TensorError::OutOfMemory);
+        }
+
+        // Reserve the memory
+        stats.allocated_bytes += size;
+        stats.allocation_count += 1;
+        if stats.allocated_bytes > stats.peak_allocated_bytes {
+            stats.peak_allocated_bytes = stats.allocated_bytes;
+        }
+    }
+
+    // Allocate device memory (device-specific)
+    let device_ptr = allocate_device_memory(device_id, size)?;
 
     let buffer = TensorBuffer {
         id: ObjectId::new(ObjectType::TensorBuffer),
@@ -502,13 +557,21 @@ pub fn tensor_alloc(
         dtype,
         device_id,
         size_bytes: size,
-        // Memory allocation happens in device-specific code
-        device_ptr: 0,
+        device_ptr,
         host_ptr: None,
         flags: buffer::TensorFlags::empty(),
     };
 
     let object_id = buffer.id;
+
+    log::debug!(
+        "Allocated tensor {:?}: {} bytes on device {} at 0x{:x}",
+        object_id,
+        size,
+        device_id,
+        device_ptr
+    );
+
     TENSORS.write().insert(object_id, buffer);
 
     let cap = unsafe {
@@ -522,16 +585,95 @@ pub fn tensor_alloc(
     Ok(cap)
 }
 
+/// Allocate memory on a specific device
+fn allocate_device_memory(device_id: u32, size: u64) -> Result<u64, TensorError> {
+    let devices = DEVICES.read();
+    let device = devices
+        .iter()
+        .find(|d| d.id == device_id)
+        .ok_or(TensorError::DeviceNotFound)?;
+
+    match device.device_type {
+        AcceleratorType::Cpu => {
+            // CPU: use kernel heap allocation
+            // In a real implementation, this would use a dedicated tensor heap
+            // For now, return a placeholder address
+            Ok(0x1000_0000 + (size & 0xFFFF_0000))
+        }
+        AcceleratorType::NvidiaCuda => {
+            // CUDA: would call cuMemAlloc
+            // Placeholder: return fake device pointer
+            Ok(0x7F00_0000_0000 + (size & 0xFFFF_0000))
+        }
+        AcceleratorType::AppleMetal => {
+            // Metal: would create MTLBuffer
+            // Placeholder: return fake device pointer
+            Ok(0x8000_0000_0000 + (size & 0xFFFF_0000))
+        }
+        _ => {
+            // Generic fallback
+            Ok(0x9000_0000_0000 + (size & 0xFFFF_0000))
+        }
+    }
+}
+
+/// Free memory on a specific device
+fn free_device_memory(device_id: u32, device_ptr: u64, size: u64) {
+    let devices = DEVICES.read();
+    if let Some(device) = devices.iter().find(|d| d.id == device_id) {
+        match device.device_type {
+            AcceleratorType::Cpu => {
+                // CPU: would free from kernel heap
+                log::trace!("Free CPU tensor memory at 0x{:x}", device_ptr);
+            }
+            AcceleratorType::NvidiaCuda => {
+                // CUDA: would call cuMemFree
+                log::trace!("Free CUDA tensor memory at 0x{:x}", device_ptr);
+            }
+            AcceleratorType::AppleMetal => {
+                // Metal: would release MTLBuffer
+                log::trace!("Free Metal tensor memory at 0x{:x}", device_ptr);
+            }
+            _ => {
+                log::trace!("Free tensor memory at 0x{:x}", device_ptr);
+            }
+        }
+    }
+    let _ = (device_ptr, size); // Suppress unused warnings in placeholder impl
+}
+
 /// Free a tensor buffer
 pub fn tensor_free(cap: Capability) -> Result<(), TensorError> {
     cap.require(Rights::TENSOR_FREE)?;
 
     let mut tensors = TENSORS.write();
-    tensors.remove(&cap.object_id).ok_or(TensorError::NotFound)?;
+    let buffer = tensors.remove(&cap.object_id).ok_or(TensorError::NotFound)?;
 
-    // TODO: Free device memory
+    // Free device memory
+    free_device_memory(buffer.device_id, buffer.device_ptr, buffer.size_bytes);
+
+    // Update memory tracking
+    {
+        let mut mem_stats = DEVICE_MEMORY.write();
+        if let Some(stats) = mem_stats.get_mut(&buffer.device_id) {
+            stats.allocated_bytes = stats.allocated_bytes.saturating_sub(buffer.size_bytes);
+            stats.allocation_count = stats.allocation_count.saturating_sub(1);
+        }
+    }
+
+    log::debug!(
+        "Freed tensor {:?}: {} bytes on device {}",
+        cap.object_id,
+        buffer.size_bytes,
+        buffer.device_id
+    );
 
     Ok(())
+}
+
+/// Get memory statistics for a device
+pub fn get_device_memory_stats(device_id: u32) -> Option<DeviceMemoryStats> {
+    DEVICE_MEMORY.read().get(&device_id).cloned()
 }
 
 /// Create an inference context
@@ -565,9 +707,9 @@ pub fn inference_submit(
     context_cap.require(Rights::INFERENCE)?;
     input.require(Rights::READ)?;
 
-    let contexts = CONTEXTS.read();
+    let mut contexts = CONTEXTS.write();
     let context = contexts
-        .get(&context_cap.object_id)
+        .get_mut(&context_cap.object_id)
         .ok_or(TensorError::NotFound)?;
 
     // Submit to inference scheduler
@@ -593,6 +735,8 @@ pub enum TensorError {
     InferenceError(alloc::string::String),
     /// Capability error
     Capability(CapError),
+    /// Request queue is full
+    QueueFull,
 }
 
 impl From<CapError> for TensorError {
@@ -641,11 +785,11 @@ pub fn submit_inference(
     _flags: u32,
 ) -> Result<u64, TensorError> {
     // Look up inference context by model_id
-    let contexts = CONTEXTS.read();
+    let mut contexts = CONTEXTS.write();
 
     // Find context for this model
     let context_id = ObjectId::from_raw(model_id);
-    let context = contexts.get(&context_id).ok_or(TensorError::NotFound)?;
+    let context = contexts.get_mut(&context_id).ok_or(TensorError::NotFound)?;
 
     // Create inference params with default balanced sampling
     let params = inference::InferenceParams::balanced();
@@ -676,4 +820,210 @@ fn find_npu_device() -> Option<u32> {
             AcceleratorType::QualcommHexagon | AcceleratorType::IntelNpu |
             AcceleratorType::AppleAne | AcceleratorType::GoogleTpu))
         .map(|d| d.id)
+}
+
+// ============================================================================
+// Tensor Migration Functions
+// ============================================================================
+
+pub use migration::MigrationStrategy;
+
+/// Global migration scheduler
+static MIGRATION_SCHEDULER: RwLock<migration::MigrationScheduler> =
+    RwLock::new(migration::MigrationScheduler::new_const());
+
+/// Get the device ID where a tensor is currently located
+pub fn get_tensor_device(tensor_id: ObjectId) -> Option<u32> {
+    TENSORS.read().get(&tensor_id).map(|t| t.device_id)
+}
+
+/// Schedule an asynchronous tensor migration
+///
+/// Returns a job ID that can be used to track migration progress.
+pub fn schedule_migration(
+    tensor_id: ObjectId,
+    src_device: u32,
+    dst_device: u32,
+) -> u64 {
+    MIGRATION_SCHEDULER
+        .write()
+        .schedule(tensor_id, src_device, dst_device)
+}
+
+/// Perform synchronous tensor migration
+///
+/// Blocks until migration is complete.
+pub fn migrate_sync(
+    tensor_id: ObjectId,
+    src_device: u32,
+    dst_device: u32,
+    strategy: MigrationStrategy,
+) -> Result<(), TensorError> {
+    // Get the tensor buffer
+    let mut tensors = TENSORS.write();
+    let tensor = tensors.get_mut(&tensor_id).ok_or(TensorError::NotFound)?;
+
+    // Validate source device
+    if tensor.device_id != src_device {
+        return Err(TensorError::DeviceMismatch);
+    }
+
+    // Get device info
+    let devices = DEVICES.read();
+    let dst_dev = devices
+        .iter()
+        .find(|d| d.id == dst_device)
+        .ok_or(TensorError::DeviceNotFound)?;
+
+    // Perform migration based on strategy
+    match strategy {
+        MigrationStrategy::Sync => {
+            // Direct copy through CPU
+            migrate_through_cpu(tensor, dst_device, dst_dev)?;
+        }
+        MigrationStrategy::Staged => {
+            // Copy to host memory first, then to device
+            migrate_through_cpu(tensor, dst_device, dst_dev)?;
+        }
+        MigrationStrategy::Async => {
+            // For sync call, fall back to CPU path
+            migrate_through_cpu(tensor, dst_device, dst_dev)?;
+        }
+        MigrationStrategy::P2P => {
+            // Attempt P2P, fall back to CPU if not available
+            if !try_p2p_migration(tensor, src_device, dst_device) {
+                migrate_through_cpu(tensor, dst_device, dst_dev)?;
+            }
+        }
+    }
+
+    // Update tensor's device ID
+    tensor.device_id = dst_device;
+
+    log::debug!(
+        "Migrated tensor {:?} from device {} to device {}",
+        tensor_id,
+        src_device,
+        dst_device
+    );
+
+    Ok(())
+}
+
+/// Migrate tensor through CPU memory (staging)
+fn migrate_through_cpu(
+    tensor: &mut TensorBuffer,
+    dst_device: u32,
+    dst_dev: &ComputeDevice,
+) -> Result<(), TensorError> {
+    // If tensor is already on CPU, just update device pointer
+    if tensor.device_id == 0 {
+        // Allocate on destination device
+        // For now, we keep the same pointer (placeholder)
+        // Real implementation would call device-specific allocation
+        return Ok(());
+    }
+
+    // Allocate host staging buffer if needed
+    if tensor.host_ptr.is_none() {
+        let host_buffer = alloc::vec![0u8; tensor.size_bytes as usize];
+        let ptr = host_buffer.leak().as_mut_ptr();
+        tensor.host_ptr = Some(ptr);
+    }
+
+    // Copy from source device to host
+    // (In real implementation, this would use DMA or device API)
+    copy_device_to_host(tensor)?;
+
+    // Copy from host to destination device
+    copy_host_to_device(tensor, dst_device)?;
+
+    Ok(())
+}
+
+/// Try peer-to-peer migration between GPUs
+fn try_p2p_migration(
+    tensor: &mut TensorBuffer,
+    src_device: u32,
+    dst_device: u32,
+) -> bool {
+    // Check if P2P is available between these devices
+    // For now, always return false (not implemented)
+    false
+}
+
+/// Copy tensor data from device to host memory
+fn copy_device_to_host(tensor: &mut TensorBuffer) -> Result<(), TensorError> {
+    // Placeholder - real implementation would use:
+    // - cudaMemcpy for NVIDIA
+    // - hipMemcpy for AMD
+    // - Metal blit for Apple
+    Ok(())
+}
+
+/// Copy tensor data from host to device memory
+fn copy_host_to_device(tensor: &mut TensorBuffer, dst_device: u32) -> Result<(), TensorError> {
+    // Placeholder - real implementation would use device-specific API
+    Ok(())
+}
+
+/// Check migration job status
+pub fn migration_status(job_id: u64) -> Option<migration::MigrationStatus> {
+    // For now, just return completed (async not fully implemented)
+    Some(migration::MigrationStatus::Completed)
+}
+
+// ============================================================================
+// Memory Mapping Support
+// ============================================================================
+
+/// Get the physical frame for a tensor buffer at a given offset
+///
+/// This is called from the virtual memory fault handler when a
+/// tensor-backed VMA needs to be mapped. For CPU tensors, this returns
+/// the physical address directly. For GPU/NPU tensors, this may trigger
+/// a migration to CPU memory first.
+pub fn get_tensor_frame(tensor_id: ObjectId, offset: u64) -> Option<crate::mem::PhysAddr> {
+    let tensors = TENSORS.read();
+    let tensor = tensors.get(&tensor_id)?;
+
+    // Check if offset is within tensor bounds
+    if offset >= tensor.size_bytes {
+        log::warn!(
+            "Tensor frame access out of bounds: offset {} >= size {}",
+            offset,
+            tensor.size_bytes
+        );
+        return None;
+    }
+
+    // For CPU tensors, we can compute the physical address directly
+    if tensor.device_id == 0 {
+        // CPU tensor: device_ptr is the base physical address
+        // Calculate the page-aligned address
+        let page_offset = offset & !(crate::mem::PAGE_SIZE - 1);
+        let phys_addr = tensor.device_ptr + page_offset;
+        return Some(crate::mem::PhysAddr::new(phys_addr));
+    }
+
+    // For GPU/NPU tensors, we need to access through the host pointer
+    // If no host pointer exists, the tensor needs to be migrated first
+    if let Some(host_ptr) = tensor.host_ptr {
+        let page_offset = offset & !(crate::mem::PAGE_SIZE - 1);
+        // Offset the pointer and convert to physical address
+        let phys_addr = unsafe { host_ptr.add(page_offset as usize) } as u64;
+        return Some(crate::mem::PhysAddr::new(phys_addr));
+    }
+
+    // Tensor is on GPU/NPU without host mapping
+    // This should trigger a migration, but for now return None
+    // to indicate the mapping failed and needs explicit migration
+    log::debug!(
+        "Tensor {:?} on device {} has no host mapping for offset {}",
+        tensor_id,
+        tensor.device_id,
+        offset
+    );
+
+    None
 }

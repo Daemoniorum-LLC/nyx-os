@@ -28,7 +28,7 @@
 
 mod action;
 mod delivery;
-mod info;
+pub mod info;
 mod queue;
 mod set;
 
@@ -236,11 +236,11 @@ pub enum SignalError {
 }
 
 /// Per-process signal state
-static PROCESS_SIGNALS: RwLock<BTreeMap<ProcessId, ProcessSignalState>> =
+pub static PROCESS_SIGNALS: RwLock<BTreeMap<ProcessId, ProcessSignalState>> =
     RwLock::new(BTreeMap::new());
 
 /// Per-thread signal state
-static THREAD_SIGNALS: RwLock<BTreeMap<ThreadId, ThreadSignalState>> =
+pub static THREAD_SIGNALS: RwLock<BTreeMap<ThreadId, ThreadSignalState>> =
     RwLock::new(BTreeMap::new());
 
 /// Process-level signal state

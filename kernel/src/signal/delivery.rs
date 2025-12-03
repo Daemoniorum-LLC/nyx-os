@@ -1043,7 +1043,7 @@ mod tests {
 
     #[test]
     fn test_default_action_core_dump() {
-        use crate::signal::Signal;
+        use crate::signal::{Signal, DefaultAction};
 
         // These signals should generate core dumps
         let core_dump_signals = [
@@ -1060,15 +1060,15 @@ mod tests {
         ];
 
         for sig in core_dump_signals {
-            let action = default_action(sig);
-            assert_eq!(action, SignalAction::CoreDump,
+            let action = sig.default_action();
+            assert_eq!(action, DefaultAction::CoreDump,
                 "Expected CoreDump for {:?}", sig);
         }
     }
 
     #[test]
     fn test_default_action_terminate() {
-        use crate::signal::Signal;
+        use crate::signal::{Signal, DefaultAction};
 
         // These signals should terminate
         let term_signals = [
@@ -1081,15 +1081,15 @@ mod tests {
         ];
 
         for sig in term_signals {
-            let action = default_action(sig);
-            assert_eq!(action, SignalAction::Terminate,
+            let action = sig.default_action();
+            assert_eq!(action, DefaultAction::Terminate,
                 "Expected Terminate for {:?}", sig);
         }
     }
 
     #[test]
     fn test_default_action_ignore() {
-        use crate::signal::Signal;
+        use crate::signal::{Signal, DefaultAction};
 
         let ignore_signals = [
             Signal::SIGCHLD,
@@ -1098,15 +1098,15 @@ mod tests {
         ];
 
         for sig in ignore_signals {
-            let action = default_action(sig);
-            assert_eq!(action, SignalAction::Ignore,
+            let action = sig.default_action();
+            assert_eq!(action, DefaultAction::Ignore,
                 "Expected Ignore for {:?}", sig);
         }
     }
 
     #[test]
     fn test_default_action_stop() {
-        use crate::signal::Signal;
+        use crate::signal::{Signal, DefaultAction};
 
         let stop_signals = [
             Signal::SIGSTOP,
@@ -1116,17 +1116,17 @@ mod tests {
         ];
 
         for sig in stop_signals {
-            let action = default_action(sig);
-            assert_eq!(action, SignalAction::Stop,
+            let action = sig.default_action();
+            assert_eq!(action, DefaultAction::Stop,
                 "Expected Stop for {:?}", sig);
         }
     }
 
     #[test]
     fn test_default_action_continue() {
-        use crate::signal::Signal;
+        use crate::signal::{Signal, DefaultAction};
 
-        let action = default_action(Signal::SIGCONT);
-        assert_eq!(action, SignalAction::Continue);
+        let action = Signal::SIGCONT.default_action();
+        assert_eq!(action, DefaultAction::Continue);
     }
 }

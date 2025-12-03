@@ -18,12 +18,14 @@
 mod ring;
 mod message;
 mod endpoint;
-mod notification;
+pub mod notification;
+pub mod shm;
 
-pub use ring::{IpcRing, SqEntry, CqEntry, IpcOpcode, SqFlags, CqFlags};
+pub use ring::{IpcRing, SqEntry, CqEntry, IpcOpcode, SqFlags, CqFlags, ring_flags};
 pub use message::{Message, MessageHeader, MemoryGrant};
 pub use endpoint::Endpoint;
 pub use notification::Notification;
+pub use shm::{SharedRegion, SharedFlags, ShmError};
 
 use crate::cap::{Capability, CapError, ObjectId, ObjectType, Rights};
 use spin::RwLock;
@@ -34,6 +36,9 @@ static ENDPOINTS: RwLock<BTreeMap<ObjectId, Endpoint>> = RwLock::new(BTreeMap::n
 
 /// Global notification registry
 static NOTIFICATIONS: RwLock<BTreeMap<ObjectId, Notification>> = RwLock::new(BTreeMap::new());
+
+/// Global IPC ring registry
+static RINGS: RwLock<BTreeMap<ObjectId, IpcRing>> = RwLock::new(BTreeMap::new());
 
 /// Initialize the IPC subsystem
 pub fn init() {
@@ -52,9 +57,13 @@ pub fn create_ring(sq_size: u32, cq_size: u32, _flags: u32) -> Result<Capability
         return Err(IpcError::InvalidSize);
     }
 
-    let _ring = IpcRing::new(sq_size, cq_size)?;
+    let ring = IpcRing::new(sq_size, cq_size)?;
     let object_id = ObjectId::new(ObjectType::IpcRing);
 
+    // Store ring in registry
+    RINGS.write().insert(object_id, ring);
+
+    // SAFETY: Kernel creating initial capability
     let cap = unsafe {
         Capability::new_unchecked(object_id, Rights::IPC_FULL)
     };
@@ -563,14 +572,130 @@ fn error_to_code(err: &IpcError) -> i64 {
 // ============================================================================
 
 /// Enter IPC ring and process operations
+///
+/// This is the main entry point for io_uring-style IPC. It:
+/// 1. Processes up to `to_submit` submission queue entries
+/// 2. Waits until at least `min_complete` completions are available (if > 0)
+/// 3. Returns the number of completions generated
+///
+/// # Arguments
+///
+/// * `ring_id` - Object ID of the IPC ring
+/// * `to_submit` - Maximum number of submissions to process (0 = none)
+/// * `min_complete` - Minimum completions to wait for (0 = don't wait)
+///
+/// # Returns
+///
+/// Number of completions generated, or error
 pub fn ring_enter(
-    _ring_id: ObjectId,
-    _to_submit: u32,
-    _min_complete: u32,
+    ring_id: ObjectId,
+    to_submit: u32,
+    min_complete: u32,
 ) -> Result<u32, IpcError> {
-    // Ring processing would happen here
-    // For now, return 0 completions
-    Ok(0)
+    // Get the ring
+    let mut rings = RINGS.write();
+    let ring = rings.get_mut(&ring_id).ok_or(IpcError::InvalidEndpoint)?;
+
+    let mut completions_generated: u32 = 0;
+
+    // Process submission queue entries
+    if to_submit > 0 {
+        let mut processed: u32 = 0;
+
+        while processed < to_submit {
+            // Try to pop a submission entry
+            let entry = match ring.pop_sq() {
+                Some(e) => e,
+                None => break, // No more entries
+            };
+
+            // Process the entry
+            let result = process_sq_entry(&entry, ring);
+
+            // Generate completion (unless NO_CQE flag is set)
+            if !entry.flags.contains(SqFlags::NO_CQE) {
+                let cqe = CqEntry {
+                    user_data: entry.user_data,
+                    result: match &result {
+                        Ok(_) => 0,
+                        Err(e) => error_to_code(e),
+                    },
+                    data: [0; 2],
+                    flags: CqFlags::empty(),
+                    _reserved: 0,
+                };
+
+                // Try to push completion, mark overflow if full
+                if ring.push_cq(cqe).is_ok() {
+                    completions_generated += 1;
+                } else {
+                    // Set overflow flag
+                    ring.flags.fetch_or(ring_flags::CQ_OVERFLOW, core::sync::atomic::Ordering::SeqCst);
+                }
+            }
+
+            processed += 1;
+
+            // If this entry is chained and failed, skip the chain
+            if entry.flags.contains(SqFlags::CHAIN) && result.is_err() {
+                skip_chain(ring);
+            }
+        }
+    }
+
+    // Wait for minimum completions if requested
+    if min_complete > 0 && completions_generated < min_complete {
+        // In a real implementation, we would block here and wake when completions arrive
+        // For now, we'll spin-wait with a yield (not ideal but functional)
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 10000;
+
+        while ring.cq_pending() < min_complete && attempts < MAX_ATTEMPTS {
+            // Yield to other threads
+            crate::sched::yield_now();
+            attempts += 1;
+        }
+
+        completions_generated = ring.cq_pending();
+    }
+
+    Ok(completions_generated)
+}
+
+/// Skip chained entries after a failure
+fn skip_chain(ring: &mut IpcRing) {
+    loop {
+        match ring.pop_sq() {
+            Some(entry) => {
+                // Generate a cancelled completion for this entry
+                if !entry.flags.contains(SqFlags::NO_CQE) {
+                    let cqe = CqEntry {
+                        user_data: entry.user_data,
+                        result: error_to_code(&IpcError::Cancelled),
+                        data: [0; 2],
+                        flags: CqFlags::CANCELLED,
+                        _reserved: 0,
+                    };
+                    let _ = ring.push_cq(cqe);
+                }
+
+                // Continue if still chained
+                if !entry.flags.contains(SqFlags::CHAIN) {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+}
+
+/// Destroy an IPC ring
+pub fn destroy_ring(ring_id: ObjectId) -> Result<(), IpcError> {
+    RINGS
+        .write()
+        .remove(&ring_id)
+        .map(|_| ())
+        .ok_or(IpcError::InvalidEndpoint)
 }
 
 /// Send a message to an endpoint

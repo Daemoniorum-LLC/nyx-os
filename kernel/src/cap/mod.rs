@@ -26,6 +26,7 @@ pub use cspace::{CNode, CSlot, CSpace, CSpaceError};
 pub use object::{ObjectId, ObjectType};
 pub use rights::Rights;
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Lazy, RwLock};
 

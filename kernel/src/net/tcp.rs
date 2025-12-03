@@ -381,8 +381,9 @@ pub fn recv(conn_id: u64, buffer: &mut [u8]) -> Result<usize, NetError> {
         return Err(NetError::WouldBlock);
     }
 
-    for i in 0..available {
-        buffer[i] = conn.recv_buffer.pop_front().unwrap();
+    // Drain bytes from recv buffer into user buffer
+    for (i, byte) in conn.recv_buffer.drain(..available).enumerate() {
+        buffer[i] = byte;
     }
 
     Ok(available)

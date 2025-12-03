@@ -17,7 +17,7 @@ use spin::RwLock;
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
 /// Global process table
-static PROCESSES: RwLock<BTreeMap<ProcessId, Process>> = RwLock::new(BTreeMap::new());
+pub static PROCESSES: RwLock<BTreeMap<ProcessId, Process>> = RwLock::new(BTreeMap::new());
 
 /// Process identifier
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -54,6 +54,17 @@ pub enum ProcessState {
     Zombie(i32),
     /// Process has been fully cleaned up
     Dead,
+}
+
+/// Tracked memory allocation
+#[derive(Clone, Debug)]
+pub struct TrackedAllocation {
+    /// Start virtual address
+    pub start: VirtAddr,
+    /// Size in bytes (page-aligned)
+    pub size: u64,
+    /// Whether this is physically contiguous (for DMA)
+    pub contiguous: bool,
 }
 
 /// Process control block
@@ -94,6 +105,10 @@ pub struct Process {
     pub next_fd: i32,
     /// Memory statistics
     pub mem_stats: MemoryStats,
+    /// Tracked memory allocations (for ownership verification)
+    allocations: BTreeMap<u64, TrackedAllocation>,
+    /// Threads waiting to join on this process's threads
+    pub join_waiters: BTreeMap<ThreadId, Vec<ThreadId>>,
 }
 
 /// Memory usage statistics
@@ -133,6 +148,8 @@ impl Process {
             fd_table: BTreeMap::new(),
             next_fd: 3, // 0=stdin, 1=stdout, 2=stderr
             mem_stats: MemoryStats::default(),
+            allocations: BTreeMap::new(),
+            join_waiters: BTreeMap::new(),
         }
     }
 
@@ -188,6 +205,75 @@ impl Process {
     /// Get a capability by slot
     pub fn get_cap(&self, slot: u32) -> Option<&Capability> {
         self.cspace.get(slot)
+    }
+
+    /// Track a memory allocation for ownership verification
+    ///
+    /// This must be called after successfully allocating memory to enable
+    /// verification during free operations.
+    pub fn track_allocation(&mut self, start: VirtAddr, size: u64, contiguous: bool) {
+        self.allocations.insert(
+            start.as_u64(),
+            TrackedAllocation {
+                start,
+                size,
+                contiguous,
+            },
+        );
+    }
+
+    /// Verify that this process owns an allocation at the given address
+    ///
+    /// Returns true if the process has a tracked allocation that exactly matches
+    /// the start address and size, false otherwise.
+    pub fn verify_allocation(&self, start: VirtAddr, size: u64) -> bool {
+        self.allocations
+            .get(&start.as_u64())
+            .is_some_and(|alloc| alloc.size == size)
+    }
+
+    /// Remove tracking for an allocation (called during free)
+    pub fn untrack_allocation(&mut self, start: VirtAddr) -> Option<TrackedAllocation> {
+        self.allocations.remove(&start.as_u64())
+    }
+
+    /// Get all allocations (for debugging/cleanup)
+    pub fn allocations(&self) -> impl Iterator<Item = &TrackedAllocation> {
+        self.allocations.values()
+    }
+
+    /// Clean up all allocations (called during process exit)
+    pub fn cleanup_allocations(&mut self) {
+        // Free all tracked allocations
+        for alloc in self.allocations.values() {
+            let num_pages = (alloc.size / crate::mem::PAGE_SIZE) as usize;
+            for i in 0..num_pages {
+                let page_virt = VirtAddr::new(alloc.start.as_u64() + (i as u64) * crate::mem::PAGE_SIZE);
+                if let Some(phys_addr) = self.address_space.translate(page_virt) {
+                    let _ = self.address_space.unmap(page_virt, crate::mem::PAGE_SIZE);
+                    crate::mem::free_frame(phys_addr);
+                }
+            }
+        }
+        self.allocations.clear();
+    }
+
+    /// Register a thread to wait for another thread to exit (for join)
+    pub fn add_join_waiter(&mut self, target_thread: ThreadId, waiting_thread: ThreadId) {
+        self.join_waiters
+            .entry(target_thread)
+            .or_insert_with(Vec::new)
+            .push(waiting_thread);
+    }
+
+    /// Get and clear waiters for a thread that exited
+    pub fn take_join_waiters(&mut self, thread: ThreadId) -> Vec<ThreadId> {
+        self.join_waiters.remove(&thread).unwrap_or_default()
+    }
+
+    /// Get the raw process ID value
+    pub fn raw_pid(&self) -> u64 {
+        self.pid.0
     }
 }
 
@@ -296,6 +382,7 @@ pub fn spawn(args: SpawnArgs) -> Result<ProcessId, SpawnError> {
         entry_point,
         stack_top,
         proc.address_space.clone(),
+        proc.pid,
     );
     let thread_id = thread.id;
 
@@ -371,33 +458,48 @@ fn load_executable(path: &str, proc: &mut Process) -> Result<u64, SpawnError> {
             let page_vaddr = VirtAddr::new(start_page.as_u64() + i as u64 * PAGE_SIZE);
             let frame = crate::mem::alloc_frame().ok_or(SpawnError::OutOfMemory)?;
 
-            // Zero the frame first
+            // Get the kernel-mapped virtual address for this physical frame
+            // This is safe because the kernel has all physical memory mapped
+            let kernel_vaddr = crate::mem::phys_to_virt(frame);
+
+            // Zero the frame first using the kernel virtual address
+            // SAFETY: kernel_vaddr points to valid kernel-mapped memory for this frame
             unsafe {
-                let ptr = frame.as_u64() as *mut u8;
+                let ptr = kernel_vaddr as *mut u8;
                 core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
             }
 
             // Copy file data if applicable
-            let page_offset = page_vaddr.as_u64() - vaddr.as_u64();
-            if page_offset < filesz {
-                let copy_start = offset + page_offset as usize;
-                let copy_len = core::cmp::min(PAGE_SIZE, filesz - page_offset) as usize;
-                if copy_start + copy_len <= data.len() {
+            let page_start_in_segment = if page_vaddr.as_u64() >= vaddr.as_u64() {
+                0u64
+            } else {
+                vaddr.as_u64() - page_vaddr.as_u64()
+            };
+            let page_end_in_segment = PAGE_SIZE;
+
+            // Calculate file offset for this page
+            let segment_offset_start = page_vaddr.as_u64().saturating_sub(vaddr.as_u64());
+            if segment_offset_start < filesz {
+                let file_start = offset + segment_offset_start as usize;
+                let copy_len = core::cmp::min(
+                    PAGE_SIZE - page_start_in_segment,
+                    filesz.saturating_sub(segment_offset_start),
+                ) as usize;
+
+                if file_start + copy_len <= data.len() && copy_len > 0 {
+                    // SAFETY: We're copying into kernel-mapped memory from a valid slice
                     unsafe {
-                        let dst = frame.as_u64() as *mut u8;
-                        let src = data.as_ptr().add(copy_start);
+                        let dst = (kernel_vaddr + page_start_in_segment) as *mut u8;
+                        let src = data.as_ptr().add(file_start);
                         core::ptr::copy_nonoverlapping(src, dst, copy_len);
                     }
                 }
             }
 
-            // Map the page
-            proc.address_space.map(
-                page_vaddr,
-                PAGE_SIZE,
-                prot,
-                crate::mem::virt::VmaBacking::Anonymous,
-            ).map_err(|_| SpawnError::OutOfMemory)?;
+            // Map the physical frame into the process's address space
+            proc.address_space
+                .map_page(page_vaddr, frame, prot)
+                .map_err(|_| SpawnError::OutOfMemory)?;
         }
 
         // Update memory stats
@@ -429,18 +531,20 @@ fn setup_user_stack(
         let page_vaddr = VirtAddr::new(stack_base.as_u64() + i as u64 * PAGE_SIZE);
         let frame = crate::mem::alloc_frame().ok_or(SpawnError::OutOfMemory)?;
 
-        // Zero the frame
+        // Get the kernel-mapped virtual address for this physical frame
+        let kernel_vaddr = crate::mem::phys_to_virt(frame);
+
+        // Zero the frame using the kernel virtual address
+        // SAFETY: kernel_vaddr points to valid kernel-mapped memory for this frame
         unsafe {
-            let ptr = frame.as_u64() as *mut u8;
+            let ptr = kernel_vaddr as *mut u8;
             core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
         }
 
-        proc.address_space.map(
-            page_vaddr,
-            PAGE_SIZE,
-            prot,
-            crate::mem::virt::VmaBacking::Anonymous,
-        ).map_err(|_| SpawnError::OutOfMemory)?;
+        // Map the physical frame into the process's address space
+        proc.address_space
+            .map_page(page_vaddr, frame, prot)
+            .map_err(|_| SpawnError::OutOfMemory)?;
     }
 
     proc.mem_stats.vm_size += stack_size;
@@ -451,7 +555,13 @@ fn setup_user_stack(
 
 /// Exit the current process
 pub fn exit(exit_code: i32) {
-    let pid = current_process_id().expect("No current process");
+    let pid = match current_process_id() {
+        Some(pid) => pid,
+        None => {
+            log::error!("exit() called with no current process");
+            return;
+        }
+    };
 
     log::info!("Process {} exiting with code {}", pid.0, exit_code);
 
@@ -674,6 +784,8 @@ impl Clone for Process {
             fd_table: self.fd_table.clone(),
             next_fd: self.next_fd,
             mem_stats: self.mem_stats,
+            allocations: BTreeMap::new(), // Allocations are not cloned (fresh address space)
+            join_waiters: BTreeMap::new(), // Join waiters are not cloned
         }
     }
 }

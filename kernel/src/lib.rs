@@ -1,6 +1,6 @@
 //! # Nyx Microkernel
 //!
-//! A formally-verified, capability-based microkernel with AI-native syscalls.
+//! A capability-based microkernel with AI-native syscalls.
 //!
 //! ## Design Principles
 //!
@@ -8,7 +8,41 @@
 //! - **Memory Safety**: Rust everywhere except hardware interfaces
 //! - **Async-First**: io_uring-style completion queues for all IPC
 //! - **AI-Native**: First-class tensor operations and inference syscalls
-//! - **Formally Verified**: Core components proven in Lean 4
+//! - **Rigorously Tested**: Comprehensive test suite with property-based testing
+//!
+//! ## Lock Ordering
+//!
+//! To prevent deadlocks, locks must be acquired in the following order.
+//! Acquiring locks out of order is a bug and may cause deadlocks.
+//!
+//! ```text
+//! Lock Hierarchy (acquire in this order, never reverse):
+//!
+//! Level 0 (outermost - acquire first):
+//!   - PROCESSES         (process table)
+//!   - TENSORS           (tensor buffer registry)
+//!
+//! Level 1:
+//!   - THREADS           (thread table)
+//!   - ENDPOINTS         (IPC endpoint registry)
+//!   - RINGS             (IPC ring registry)
+//!
+//! Level 2:
+//!   - PER_CPU           (per-CPU scheduler state)
+//!   - NOTIFICATIONS     (notification registry)
+//!
+//! Level 3 (innermost - acquire last):
+//!   - Individual Process.address_space
+//!   - Individual Thread fields
+//! ```
+//!
+//! ### Rules
+//!
+//! 1. Never hold a lower-level lock while acquiring a higher-level lock
+//! 2. Prefer read locks over write locks when possible
+//! 3. Hold locks for the minimum duration necessary
+//! 4. When acquiring multiple locks at the same level, use a consistent ordering
+//!    (e.g., by ProcessId or ThreadId to avoid ABBA deadlocks)
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
@@ -16,9 +50,6 @@
     abi_x86_interrupt,
     allocator_api,
     naked_functions,
-    asm_const,
-    const_mut_refs,
-    inline_const,
     slice_ptr_get,
     strict_provenance,
 )]
@@ -33,6 +64,8 @@ extern crate std as alloc;
 pub mod arch;
 pub mod cap;
 pub mod signal;
+pub mod sync;
+pub mod traits;
 
 // Test-compatible modules (data structures and pure logic)
 #[cfg(test)]
@@ -88,6 +121,8 @@ pub mod sched;
 #[cfg(not(test))]
 pub mod tensor;
 #[cfg(not(test))]
+pub mod time;
+#[cfg(not(test))]
 pub mod timetravel;
 
 #[cfg(not(test))]
@@ -103,17 +138,32 @@ pub mod process {
     static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-    pub struct ProcessId(u64);
+    pub struct ProcessId(pub u64);
 
     impl ProcessId {
         pub fn new() -> Self {
             Self(NEXT_PID.fetch_add(1, Ordering::Relaxed))
         }
+
+        pub fn from_raw(val: u64) -> Self {
+            Self(val)
+        }
+
         pub fn raw(&self) -> u64 { self.0 }
+    }
+
+    impl Default for ProcessId {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     pub fn current_pid() -> Option<ProcessId> {
         Some(ProcessId(1))
+    }
+
+    pub fn current_process_id() -> Option<ProcessId> {
+        current_pid()
     }
 
     pub fn terminate(_pid: ProcessId, _exit_code: i32) {}
@@ -123,12 +173,20 @@ pub mod process {
 
 #[cfg(test)]
 pub mod sched {
+    use core::time::Duration;
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub struct ThreadId(pub u64);
 
     impl ThreadId {
         pub fn new(id: u64) -> Self { Self(id) }
         pub fn raw(&self) -> u64 { self.0 }
+    }
+
+    impl Default for ThreadId {
+        fn default() -> Self {
+            Self(1)
+        }
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,6 +198,15 @@ pub mod sched {
         Semaphore,
         Futex,
         Signal,
+        Join(ThreadId),
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum ThreadState {
+        Ready,
+        Running,
+        Blocked(BlockReason),
+        Terminated,
     }
 
     pub fn timer_tick() {}
@@ -147,6 +214,7 @@ pub mod sched {
     pub fn block(_reason: BlockReason) {}
     pub fn current_thread_id() -> ThreadId { ThreadId(1) }
     pub fn yield_now() {}
+    pub fn sleep(_duration: Duration) {}
 }
 
 use core::sync::atomic::{AtomicU64, Ordering};

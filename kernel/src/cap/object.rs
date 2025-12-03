@@ -84,6 +84,8 @@ pub enum ObjectType {
     SchedulerContext = 7,
     /// IPC ring buffer
     IpcRing = 8,
+    /// Shared memory region
+    SharedMemory = 9,
 
     // === Hardware Objects (32-63) ===
     /// IRQ handler
@@ -149,6 +151,7 @@ impl ObjectType {
             6 => Some(Self::Process),
             7 => Some(Self::SchedulerContext),
             8 => Some(Self::IpcRing),
+            9 => Some(Self::SharedMemory),
             32 => Some(Self::Interrupt),
             33 => Some(Self::IoPort),
             34 => Some(Self::MmioRegion),

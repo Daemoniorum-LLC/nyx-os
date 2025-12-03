@@ -150,7 +150,10 @@ impl SlabAllocator {
         }
 
         // Allocate new, copy, free old
-        let new_layout = Layout::from_size_align(new_size, layout.align()).unwrap();
+        let new_layout = match Layout::from_size_align(new_size, layout.align()) {
+            Ok(layout) => layout,
+            Err(_) => return core::ptr::null_mut(),
+        };
         let new_ptr = self.alloc(new_layout);
         if !new_ptr.is_null() {
             unsafe {

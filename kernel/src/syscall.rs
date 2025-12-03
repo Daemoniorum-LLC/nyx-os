@@ -17,8 +17,8 @@ use crate::ipc;
 use crate::mem::user::{copy_from_user, copy_string_from_user, copy_to_user, UserMemError};
 use crate::mem::{VirtAddr, PAGE_SIZE};
 use crate::process::{ProcessId, SpawnArgs, SpawnError};
-use crate::sched::{BlockReason, SchedClass, ThreadState};
-use alloc::string::String;
+use crate::sched::{BlockReason, SchedClass, ThreadId, ThreadState};
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::time::Duration;
 
@@ -138,6 +138,7 @@ pub fn syscall_handler(regs: &mut SyscallRegs) {
         65 => handle_thread_exit(regs),
         66 => handle_thread_yield(regs),
         67 => handle_thread_sleep(regs),
+        68 => handle_thread_join(regs),
 
         // Process syscalls
         80 => handle_process_spawn(regs),
@@ -146,11 +147,27 @@ pub fn syscall_handler(regs: &mut SyscallRegs) {
         83 => handle_process_getpid(regs),
         84 => handle_process_getppid(regs),
 
+        // Filesystem syscalls
+        96 => handle_fs_open(regs),
+        97 => handle_fs_close(regs),
+        98 => handle_fs_read(regs),
+        99 => handle_fs_write(regs),
+        100 => handle_fs_stat(regs),
+        101 => handle_fs_readdir(regs),
+        102 => handle_fs_seek(regs),
+
         // Tensor/AI syscalls
         112 => handle_tensor_alloc(regs),
         113 => handle_tensor_free(regs),
+        114 => handle_tensor_migrate(regs),
         115 => handle_inference_create(regs),
         116 => handle_inference_submit(regs),
+
+        // Time-Travel syscalls
+        144 => handle_checkpoint(regs),
+        145 => handle_restore(regs),
+        146 => handle_record_start(regs),
+        147 => handle_record_stop(regs),
 
         // System syscalls
         240 => handle_debug(regs),
@@ -554,40 +571,156 @@ fn handle_mem_protect(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     Ok(0)
 }
 
+/// Memory allocation flags
+mod mem_flags {
+    /// Allocate contiguous physical memory (for DMA)
+    pub const CONTIGUOUS: u32 = 1 << 0;
+    /// Zero the allocated memory
+    pub const ZEROED: u32 = 1 << 1;
+    /// Lock pages in memory (no swap)
+    pub const LOCKED: u32 = 1 << 2;
+}
+
 fn handle_mem_alloc(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let size = regs.arg0;
-    let _flags = regs.arg1 as u32;
+    let flags = regs.arg1 as u32;
 
-    // Validate size
+    // Validate size (max 1GB per allocation)
     if size == 0 || size > 1024 * 1024 * 1024 {
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Allocate required number of physical frames
-    let num_pages = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+    // Get current process
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+    let mut proc_guard =
+        crate::process::get_process_mut(pid).ok_or(SyscallError::InvalidCapability)?;
 
-    // For contiguous allocation, use alloc_frames
-    let frame = crate::mem::alloc_frames(num_pages).ok_or(SyscallError::OutOfMemory)?;
+    // Find a free virtual address region for this allocation
+    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let virt_addr = find_free_region(&proc_guard.address_space, aligned_size)?;
 
-    Ok(frame.as_u64())
+    // Determine protection (RW for allocated memory, user-accessible)
+    let protection = crate::mem::virt::Protection::READ
+        | crate::mem::virt::Protection::WRITE
+        | crate::mem::virt::Protection::USER;
+
+    // Allocate physical frames and map them
+    let num_pages = (aligned_size / PAGE_SIZE) as usize;
+
+    if flags & mem_flags::CONTIGUOUS != 0 {
+        // Allocate contiguous physical memory (for DMA buffers)
+        let phys_base = crate::mem::alloc_frames(num_pages).ok_or(SyscallError::OutOfMemory)?;
+
+        // Map all pages contiguously
+        for i in 0..num_pages {
+            let page_virt = VirtAddr::new(virt_addr.as_u64() + (i as u64) * PAGE_SIZE);
+            let page_phys = crate::mem::PhysAddr::new(phys_base.as_u64() + (i as u64) * PAGE_SIZE);
+
+            // Zero the page if requested
+            if flags & mem_flags::ZEROED != 0 {
+                let virt_ptr = crate::mem::phys_to_virt(page_phys) as *mut u8;
+                // SAFETY: phys_to_virt gives kernel-mapped address, we own this frame
+                unsafe {
+                    core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
+                }
+            }
+
+            proc_guard
+                .address_space
+                .map_page(page_virt, page_phys, protection)
+                .map_err(|_| SyscallError::OutOfMemory)?;
+        }
+
+        // Track this allocation for ownership verification during free
+        proc_guard.track_allocation(virt_addr, aligned_size, true);
+    } else {
+        // Allocate individual frames (may not be physically contiguous)
+        for i in 0..num_pages {
+            let page_virt = VirtAddr::new(virt_addr.as_u64() + (i as u64) * PAGE_SIZE);
+            let page_phys = crate::mem::alloc_frame().ok_or(SyscallError::OutOfMemory)?;
+
+            // Zero the page if requested
+            if flags & mem_flags::ZEROED != 0 {
+                let virt_ptr = crate::mem::phys_to_virt(page_phys) as *mut u8;
+                // SAFETY: phys_to_virt gives kernel-mapped address, we own this frame
+                unsafe {
+                    core::ptr::write_bytes(virt_ptr, 0, PAGE_SIZE as usize);
+                }
+            }
+
+            proc_guard
+                .address_space
+                .map_page(page_virt, page_phys, protection)
+                .map_err(|_| SyscallError::OutOfMemory)?;
+        }
+
+        // Track this allocation
+        proc_guard.track_allocation(virt_addr, aligned_size, false);
+    }
+
+    // Update memory statistics
+    proc_guard.mem_stats.vm_size += aligned_size;
+    proc_guard.mem_stats.rss += aligned_size;
+
+    // Return the VIRTUAL address (not physical!) - this is the secure approach
+    Ok(virt_addr.as_u64())
 }
 
 fn handle_mem_free(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let addr = regs.arg0;
     let size = regs.arg1;
 
-    // Validate the address looks like a physical frame we allocated
-    // (In a full implementation, we'd track allocations)
-    if addr == 0 {
+    // Validate address is in userspace range
+    if addr == 0 || addr >= 0x0000_8000_0000_0000 || addr < 0x1000 {
         return Err(SyscallError::BadAddress);
     }
 
-    // Free the frames
-    let num_pages = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-    for i in 0..num_pages {
-        let frame_addr = crate::mem::PhysAddr::new(addr + (i as u64) * PAGE_SIZE);
-        crate::mem::free_frame(frame_addr);
+    // Validate size
+    if size == 0 {
+        return Err(SyscallError::InvalidArgument);
     }
+
+    // Get current process
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+    let mut proc_guard =
+        crate::process::get_process_mut(pid).ok_or(SyscallError::InvalidCapability)?;
+
+    let virt_addr = VirtAddr::new(addr);
+    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+
+    // CRITICAL: Verify this process owns this allocation
+    // This prevents use-after-free and freeing other processes' memory
+    if !proc_guard.verify_allocation(virt_addr, aligned_size) {
+        log::warn!(
+            "Process {} attempted to free unowned memory at {:#x} (size {})",
+            pid.raw(),
+            addr,
+            size
+        );
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Unmap pages and free physical frames
+    let num_pages = (aligned_size / PAGE_SIZE) as usize;
+    for i in 0..num_pages {
+        let page_virt = VirtAddr::new(addr + (i as u64) * PAGE_SIZE);
+
+        // Translate to physical address before unmapping
+        if let Some(phys_addr) = proc_guard.address_space.translate(page_virt) {
+            // Unmap the page from the address space
+            let _ = proc_guard.address_space.unmap(page_virt, PAGE_SIZE);
+
+            // Free the physical frame
+            crate::mem::free_frame(phys_addr);
+        }
+    }
+
+    // Remove from allocation tracking
+    proc_guard.untrack_allocation(virt_addr);
+
+    // Update memory statistics
+    proc_guard.mem_stats.vm_size = proc_guard.mem_stats.vm_size.saturating_sub(aligned_size);
+    proc_guard.mem_stats.rss = proc_guard.mem_stats.rss.saturating_sub(aligned_size);
 
     Ok(0)
 }
@@ -648,7 +781,7 @@ fn handle_thread_create(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let proc = crate::process::get_process(pid).ok_or(SyscallError::InvalidCapability)?;
 
     // Create new thread with the argument passed via register
-    let mut thread = crate::sched::Thread::new_user(entry, stack, proc.address_space.clone());
+    let mut thread = crate::sched::Thread::new_user(entry, stack, proc.address_space.clone(), pid);
 
     // Set the thread argument in rdi (first argument register on x86_64)
     thread.registers.rdi = arg;
@@ -720,6 +853,131 @@ fn handle_thread_sleep(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let duration = Duration::from_nanos(duration_ns);
     crate::sched::sleep(duration);
     Ok(0)
+}
+
+/// Thread join syscall
+///
+/// Blocks the calling thread until the target thread exits.
+/// Returns the exit code of the target thread.
+///
+/// Arguments:
+/// - arg0: Target thread ID to wait for
+/// - arg1: Timeout in nanoseconds (u64::MAX = infinite)
+///
+/// Returns:
+/// - Exit code of the joined thread on success
+/// - Error code on failure
+fn handle_thread_join(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let target_tid = ThreadId(regs.arg0);
+    let timeout_ns = regs.arg1;
+
+    // Get current thread ID
+    let current_tid = crate::sched::current_thread_id();
+
+    // Cannot join self
+    if target_tid == current_tid {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Check if target thread exists and get its process
+    let (target_pid, target_state, exit_code) = {
+        let threads = crate::sched::THREADS.read();
+        match threads.get(&target_tid) {
+            Some(thread) => {
+                let is_terminated = matches!(thread.state, ThreadState::Terminated);
+                (thread.process_id, thread.state, if is_terminated { thread.exit_code } else { 0 })
+            }
+            None => return Err(SyscallError::NotFound),
+        }
+    };
+
+    // Get current thread's process
+    let current_pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+
+    // For security, only allow joining threads in the same process
+    // or child processes (to prevent information leaks)
+    if target_pid != current_pid {
+        // Check if target is a child process thread
+        let is_child = {
+            let proc = crate::process::get_process(current_pid);
+            proc.is_some_and(|p| p.children.contains(&target_pid))
+        };
+        if !is_child {
+            return Err(SyscallError::PermissionDenied);
+        }
+    }
+
+    // If target thread is already terminated, return its exit code immediately
+    if matches!(target_state, ThreadState::Terminated) {
+        return Ok(exit_code as u64);
+    }
+
+    // Register as a waiter on the target thread
+    {
+        let mut proc_guard = crate::process::get_process_mut(target_pid)
+            .ok_or(SyscallError::NotFound)?;
+        proc_guard.add_join_waiter(target_tid, current_tid);
+    }
+
+    // Block current thread until target exits or timeout
+    let timeout = if timeout_ns == u64::MAX {
+        None
+    } else {
+        Some(Duration::from_nanos(timeout_ns))
+    };
+
+    // Set up the block
+    {
+        let mut threads = crate::sched::THREADS.write();
+        if let Some(current) = threads.get_mut(&current_tid) {
+            current.state = ThreadState::Blocked(crate::sched::BlockReason::Join(target_tid));
+            current.join_target = Some(target_tid);
+        }
+    }
+
+    // If we have a timeout, set up a timer
+    if let Some(duration) = timeout {
+        let wake_tick = crate::sched::get_tick_count() + (duration.as_millis() as u64 / 10);
+        let cpu_id = crate::sched::current_cpu_id() as usize;
+        let mut per_cpu = crate::sched::PER_CPU.write();
+        if let Some(cpu_sched) = per_cpu.get_mut(cpu_id) {
+            cpu_sched.add_to_timer_queue(current_tid, wake_tick);
+        }
+    }
+
+    // Trigger reschedule - this will switch to another thread
+    crate::sched::schedule();
+
+    // When we wake up, check why
+    let (joined_exit_code, was_timeout) = {
+        let threads = crate::sched::THREADS.read();
+        if let Some(current) = threads.get(&current_tid) {
+            // Check if we woke up due to the target exiting or timeout
+            let target = threads.get(&target_tid);
+            match target {
+                Some(t) if matches!(t.state, ThreadState::Terminated) => {
+                    (t.exit_code, false)
+                }
+                _ => (0, true), // Target not found or not terminated = timeout
+            }
+        } else {
+            (0, true)
+        }
+    };
+
+    // Clear join target
+    {
+        let mut threads = crate::sched::THREADS.write();
+        if let Some(current) = threads.get_mut(&current_tid) {
+            current.join_target = None;
+        }
+    }
+
+    if was_timeout && timeout.is_some() {
+        return Err(SyscallError::Timeout);
+    }
+
+    Ok(joined_exit_code as u64)
 }
 
 // ============================================================================
@@ -857,6 +1115,69 @@ fn handle_tensor_free(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     }
 }
 
+/// Migrate tensor to a different device
+///
+/// Arguments:
+/// - arg0: Tensor capability
+/// - arg1: Target device ID (0 = CPU, 1-N = GPU/NPU)
+/// - arg2: Flags (0 = sync, 1 = async)
+///
+/// Returns:
+/// - Job ID for async migrations (> 0)
+/// - 0 for sync migrations that completed
+/// - Negative error code on failure
+fn handle_tensor_migrate(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let tensor_cap = regs.arg0;
+    let target_device = regs.arg1 as u32;
+    let flags = regs.arg2 as u32;
+
+    // Validate device ID (max 16 devices)
+    const MAX_DEVICES: u32 = 16;
+    if target_device >= MAX_DEVICES {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Create capability from raw ID
+    let tensor_id = ObjectId::from_raw(tensor_cap);
+    let cap = unsafe {
+        Capability::new_unchecked(tensor_id, Rights::TENSOR_MIGRATE)
+    };
+
+    // Check capability rights
+    if !cap.has_rights(Rights::TENSOR_MIGRATE) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Get current device for the tensor
+    let current_device = match crate::tensor::get_tensor_device(tensor_id) {
+        Some(dev) => dev,
+        None => return Err(SyscallError::InvalidCapability),
+    };
+
+    // If already on target device, no-op
+    if current_device == target_device {
+        return Ok(0);
+    }
+
+    // Choose migration strategy
+    let strategy = crate::tensor::migration::choose_strategy(current_device, target_device);
+
+    // Flag bit 0: async migration
+    let is_async = (flags & 1) != 0;
+
+    if is_async {
+        // Schedule asynchronous migration
+        let job_id = crate::tensor::schedule_migration(tensor_id, current_device, target_device);
+        Ok(job_id)
+    } else {
+        // Perform synchronous migration
+        match crate::tensor::migrate_sync(tensor_id, current_device, target_device, strategy) {
+            Ok(_) => Ok(0),
+            Err(_) => Err(SyscallError::IoError),
+        }
+    }
+}
+
 fn handle_inference_create(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     let model_cap = regs.arg0;
     let config_ptr = regs.arg1 as *const u8;
@@ -925,6 +1246,490 @@ fn handle_debug(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     Ok(0)
 }
 
+// ============================================================================
+// Filesystem Syscall Handlers
+// ============================================================================
+
+use alloc::collections::BTreeMap;
+
+/// Global file handle registry
+static FILE_HANDLES: spin::RwLock<BTreeMap<u64, crate::fs::FileHandle>> =
+    spin::RwLock::new(BTreeMap::new());
+
+/// Next file handle ID
+static NEXT_FH_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+/// Open a file
+///
+/// Args:
+/// - arg0: path pointer
+/// - arg1: path length
+/// - arg2: flags (OpenFlags)
+/// - arg3: mode (for CREATE)
+///
+/// Returns: file handle ID or negative error
+fn handle_fs_open(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let path_ptr = regs.arg0 as *const u8;
+    let path_len = regs.arg1 as usize;
+    let flags = regs.arg2 as u32;
+    let _mode = regs.arg3 as u32;
+
+    // Validate path length
+    const MAX_PATH_LEN: usize = 4096;
+    if path_len > MAX_PATH_LEN {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Copy path from userspace
+    let path = copy_string_from_user(path_ptr, path_len)?;
+
+    // Convert flags
+    let open_flags = crate::fs::OpenFlags::from_bits_truncate(flags);
+
+    // Open the file
+    match crate::fs::open(&path, open_flags) {
+        Ok(handle) => {
+            // Allocate file handle ID
+            let fh_id = NEXT_FH_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+            // Store handle
+            FILE_HANDLES.write().insert(fh_id, handle);
+
+            Ok(fh_id)
+        }
+        Err(e) => Err(fs_error_to_syscall(e)),
+    }
+}
+
+/// Close a file handle
+///
+/// Args:
+/// - arg0: file handle ID
+fn handle_fs_close(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let fh_id = regs.arg0;
+
+    // Remove handle
+    if FILE_HANDLES.write().remove(&fh_id).is_some() {
+        Ok(0)
+    } else {
+        Err(SyscallError::InvalidArgument)
+    }
+}
+
+/// Read from a file
+///
+/// Args:
+/// - arg0: file handle ID
+/// - arg1: buffer pointer
+/// - arg2: buffer length
+///
+/// Returns: bytes read or negative error
+fn handle_fs_read(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let fh_id = regs.arg0;
+    let buf_ptr = regs.arg1 as *mut u8;
+    let buf_len = regs.arg2 as usize;
+
+    // Validate buffer length
+    const MAX_READ_SIZE: usize = 1024 * 1024; // 1MB max
+    if buf_len > MAX_READ_SIZE {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Get the file handle
+    let mut handles = FILE_HANDLES.write();
+    let handle = handles.get_mut(&fh_id).ok_or(SyscallError::InvalidArgument)?;
+
+    // Check read permission
+    if !handle.flags.contains(crate::fs::OpenFlags::READ) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Allocate temporary buffer
+    let mut temp_buf = alloc::vec![0u8; buf_len];
+
+    // Read into temporary buffer
+    match crate::fs::read(handle, &mut temp_buf) {
+        Ok(bytes_read) => {
+            // Copy to userspace
+            copy_to_user(buf_ptr, &temp_buf[..bytes_read])?;
+            Ok(bytes_read as u64)
+        }
+        Err(e) => Err(fs_error_to_syscall(e)),
+    }
+}
+
+/// Write to a file
+///
+/// Args:
+/// - arg0: file handle ID
+/// - arg1: buffer pointer
+/// - arg2: buffer length
+///
+/// Returns: bytes written or negative error
+fn handle_fs_write(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let fh_id = regs.arg0;
+    let buf_ptr = regs.arg1 as *const u8;
+    let buf_len = regs.arg2 as usize;
+
+    // Get the file handle
+    let handles = FILE_HANDLES.read();
+    let handle = handles.get(&fh_id).ok_or(SyscallError::InvalidArgument)?;
+
+    // Check write permission
+    if !handle.flags.contains(crate::fs::OpenFlags::WRITE) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    // Current filesystem (initrd) is read-only
+    // This would write to tmpfs or other writable filesystems
+    Err(SyscallError::PermissionDenied)
+}
+
+/// Get file status/metadata
+///
+/// Args:
+/// - arg0: path pointer
+/// - arg1: path length
+/// - arg2: stat buffer pointer
+///
+/// Returns: 0 on success or negative error
+fn handle_fs_stat(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let path_ptr = regs.arg0 as *const u8;
+    let path_len = regs.arg1 as usize;
+    let stat_ptr = regs.arg2 as *mut u8;
+
+    // Validate path length
+    const MAX_PATH_LEN: usize = 4096;
+    if path_len > MAX_PATH_LEN {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Copy path from userspace
+    let path = copy_string_from_user(path_ptr, path_len)?;
+
+    // Get stat
+    match crate::fs::stat(&path) {
+        Ok(stat) => {
+            // Serialize to userspace format
+            let user_stat = UserFileStat::from(stat);
+            let stat_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &user_stat as *const UserFileStat as *const u8,
+                    core::mem::size_of::<UserFileStat>(),
+                )
+            };
+            copy_to_user(stat_ptr, stat_bytes)?;
+            Ok(0)
+        }
+        Err(e) => Err(fs_error_to_syscall(e)),
+    }
+}
+
+/// Userspace-compatible file stat structure
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct UserFileStat {
+    /// Device ID
+    pub dev: u64,
+    /// Inode number
+    pub ino: u64,
+    /// File type and mode
+    pub mode: u32,
+    /// Number of hard links
+    pub nlink: u32,
+    /// User ID
+    pub uid: u32,
+    /// Group ID
+    pub gid: u32,
+    /// Device ID (for device files)
+    pub rdev: u64,
+    /// File size
+    pub size: u64,
+    /// Block size
+    pub blksize: u64,
+    /// Number of blocks
+    pub blocks: u64,
+    /// Access time
+    pub atime: u64,
+    /// Modification time
+    pub mtime: u64,
+    /// Creation time
+    pub ctime: u64,
+}
+
+impl From<crate::fs::FileStat> for UserFileStat {
+    fn from(stat: crate::fs::FileStat) -> Self {
+        let mode = match stat.file_type {
+            crate::fs::FileType::Regular => 0o100000,
+            crate::fs::FileType::Directory => 0o040000,
+            crate::fs::FileType::Symlink => 0o120000,
+            crate::fs::FileType::CharDevice => 0o020000,
+            crate::fs::FileType::BlockDevice => 0o060000,
+            crate::fs::FileType::Fifo => 0o010000,
+            crate::fs::FileType::Socket => 0o140000,
+        } | stat.mode;
+
+        Self {
+            dev: stat.dev,
+            ino: stat.ino,
+            mode,
+            nlink: stat.nlink as u32,
+            uid: stat.uid,
+            gid: stat.gid,
+            rdev: 0,
+            size: stat.size,
+            blksize: 4096,
+            blocks: (stat.size + 511) / 512,
+            atime: stat.atime,
+            mtime: stat.mtime,
+            ctime: stat.ctime,
+        }
+    }
+}
+
+/// Read directory entries
+///
+/// Args:
+/// - arg0: path pointer
+/// - arg1: path length
+/// - arg2: entries buffer pointer
+/// - arg3: max entries
+///
+/// Returns: number of entries or negative error
+fn handle_fs_readdir(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let path_ptr = regs.arg0 as *const u8;
+    let path_len = regs.arg1 as usize;
+    let entries_ptr = regs.arg2 as *mut u8;
+    let max_entries = regs.arg3 as usize;
+
+    // Validate path length
+    const MAX_PATH_LEN: usize = 4096;
+    if path_len > MAX_PATH_LEN {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Copy path from userspace
+    let path = copy_string_from_user(path_ptr, path_len)?;
+
+    // Read directory
+    match crate::fs::readdir(&path) {
+        Ok(entries) => {
+            let count = core::cmp::min(entries.len(), max_entries);
+
+            // Convert and copy entries to userspace
+            for (i, entry) in entries.iter().take(count).enumerate() {
+                let user_entry = UserDirEntry::from(entry.clone());
+                let entry_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &user_entry as *const UserDirEntry as *const u8,
+                        core::mem::size_of::<UserDirEntry>(),
+                    )
+                };
+                let offset = i * core::mem::size_of::<UserDirEntry>();
+                copy_to_user(unsafe { entries_ptr.add(offset) }, entry_bytes)?;
+            }
+
+            Ok(count as u64)
+        }
+        Err(e) => Err(fs_error_to_syscall(e)),
+    }
+}
+
+/// Userspace-compatible directory entry
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserDirEntry {
+    /// Inode number
+    pub ino: u64,
+    /// File type (1=regular, 2=dir, etc.)
+    pub file_type: u8,
+    /// Name length
+    pub name_len: u8,
+    /// Reserved padding
+    pub _pad: [u8; 6],
+    /// Name (null-terminated, max 255 chars)
+    pub name: [u8; 256],
+}
+
+impl Default for UserDirEntry {
+    fn default() -> Self {
+        Self {
+            ino: 0,
+            file_type: 0,
+            name_len: 0,
+            _pad: [0; 6],
+            name: [0; 256],
+        }
+    }
+}
+
+impl From<crate::fs::DirEntry> for UserDirEntry {
+    fn from(entry: crate::fs::DirEntry) -> Self {
+        let file_type = match entry.file_type {
+            crate::fs::FileType::Regular => 1,
+            crate::fs::FileType::Directory => 2,
+            crate::fs::FileType::Symlink => 7,
+            crate::fs::FileType::CharDevice => 3,
+            crate::fs::FileType::BlockDevice => 4,
+            crate::fs::FileType::Fifo => 5,
+            crate::fs::FileType::Socket => 6,
+        };
+
+        let name_bytes = entry.name.as_bytes();
+        let name_len = core::cmp::min(name_bytes.len(), 255);
+
+        let mut name = [0u8; 256];
+        name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+
+        Self {
+            ino: entry.ino,
+            file_type,
+            name_len: name_len as u8,
+            _pad: [0; 6],
+            name,
+        }
+    }
+}
+
+/// Seek in a file
+///
+/// Args:
+/// - arg0: file handle ID
+/// - arg1: offset
+/// - arg2: whence (0=SET, 1=CUR, 2=END)
+///
+/// Returns: new position or negative error
+fn handle_fs_seek(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let fh_id = regs.arg0;
+    let offset = regs.arg1 as i64;
+    let whence = regs.arg2;
+
+    // Get the file handle
+    let mut handles = FILE_HANDLES.write();
+    let handle = handles.get_mut(&fh_id).ok_or(SyscallError::InvalidArgument)?;
+
+    // Convert whence
+    let seek_from = match whence {
+        0 => crate::fs::SeekFrom::Start,
+        1 => crate::fs::SeekFrom::Current,
+        2 => crate::fs::SeekFrom::End,
+        _ => return Err(SyscallError::InvalidArgument),
+    };
+
+    match crate::fs::seek(handle, offset, seek_from) {
+        Ok(new_pos) => Ok(new_pos),
+        Err(e) => Err(fs_error_to_syscall(e)),
+    }
+}
+
+/// Convert filesystem error to syscall error
+fn fs_error_to_syscall(err: crate::fs::FsError) -> SyscallError {
+    match err {
+        crate::fs::FsError::NotFound => SyscallError::NotFound,
+        crate::fs::FsError::PermissionDenied => SyscallError::PermissionDenied,
+        crate::fs::FsError::IsDirectory => SyscallError::InvalidArgument,
+        crate::fs::FsError::NotDirectory => SyscallError::InvalidArgument,
+        crate::fs::FsError::Exists => SyscallError::InvalidArgument,
+        crate::fs::FsError::ReadOnly => SyscallError::PermissionDenied,
+        crate::fs::FsError::NoSpace => SyscallError::OutOfMemory,
+        crate::fs::FsError::InvalidArgument => SyscallError::InvalidArgument,
+        crate::fs::FsError::IoError => SyscallError::IoError,
+        crate::fs::FsError::NotImplemented => SyscallError::InvalidSyscall,
+        crate::fs::FsError::NotMounted => SyscallError::NotFound,
+    }
+}
+
 fn handle_gettime(_regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
     Ok(crate::now_ns())
+}
+
+// ============================================================================
+// Time-Travel Syscall Handlers
+// ============================================================================
+
+/// Create a checkpoint of the current process state
+///
+/// Arguments:
+/// - arg0: flags (bit 0: include tensor state)
+///
+/// Returns:
+/// - Checkpoint object ID on success
+/// - Negative error code on failure
+fn handle_checkpoint(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let flags = regs.arg0 as u32;
+
+    // Get current process
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+
+    match crate::timetravel::syscall_checkpoint(pid, flags) {
+        Ok(checkpoint_id) => Ok(checkpoint_id),
+        Err(crate::timetravel::TimeTravelError::ProcessNotFound) => Err(SyscallError::NotFound),
+        Err(crate::timetravel::TimeTravelError::OutOfMemory) => Err(SyscallError::OutOfMemory),
+        Err(_) => Err(SyscallError::IoError),
+    }
+}
+
+/// Restore process state from a checkpoint
+///
+/// Arguments:
+/// - arg0: checkpoint object ID/capability
+/// - arg1: flags (bit 0: restore to current process, bit 1: fork new process)
+///
+/// Returns:
+/// - Process ID of restored process on success
+/// - Negative error code on failure
+fn handle_restore(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let checkpoint_cap = regs.arg0;
+    let _flags = regs.arg1 as u32;
+
+    match crate::timetravel::syscall_restore(checkpoint_cap) {
+        Ok(pid) => Ok(pid),
+        Err(crate::timetravel::TimeTravelError::CheckpointNotFound) => Err(SyscallError::NotFound),
+        Err(crate::timetravel::TimeTravelError::ProcessNotFound) => Err(SyscallError::NotFound),
+        Err(crate::timetravel::TimeTravelError::OutOfMemory) => Err(SyscallError::OutOfMemory),
+        Err(crate::timetravel::TimeTravelError::InvalidCheckpoint) => Err(SyscallError::InvalidArgument),
+        Err(_) => Err(SyscallError::IoError),
+    }
+}
+
+/// Start recording execution for deterministic replay
+///
+/// Arguments:
+/// - arg0: flags (bit 0: syscalls, bit 1: memory, bit 2: scheduler, bit 3: tensors)
+///
+/// Returns:
+/// - Recording session object ID on success
+/// - Negative error code on failure
+fn handle_record_start(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let flags = regs.arg0 as u32;
+
+    // Get current process
+    let pid = crate::process::current_process_id().ok_or(SyscallError::InvalidCapability)?;
+
+    match crate::timetravel::syscall_record_start(pid, flags) {
+        Ok(recording_id) => Ok(recording_id),
+        Err(crate::timetravel::TimeTravelError::AlreadyRecording) => Err(SyscallError::InvalidArgument),
+        Err(crate::timetravel::TimeTravelError::ProcessNotFound) => Err(SyscallError::NotFound),
+        Err(crate::timetravel::TimeTravelError::OutOfMemory) => Err(SyscallError::OutOfMemory),
+        Err(_) => Err(SyscallError::IoError),
+    }
+}
+
+/// Stop recording and finalize the trace
+///
+/// Arguments:
+/// - arg0: recording session object ID/capability
+///
+/// Returns:
+/// - Number of events recorded on success
+/// - Negative error code on failure
+fn handle_record_stop(regs: &mut SyscallRegs) -> Result<u64, SyscallError> {
+    let recording_cap = regs.arg0;
+
+    match crate::timetravel::syscall_record_stop(recording_cap) {
+        Ok(event_count) => Ok(event_count),
+        Err(crate::timetravel::TimeTravelError::RecordingNotFound) => Err(SyscallError::NotFound),
+        Err(crate::timetravel::TimeTravelError::NotRecording) => Err(SyscallError::InvalidArgument),
+        Err(_) => Err(SyscallError::IoError),
+    }
 }
