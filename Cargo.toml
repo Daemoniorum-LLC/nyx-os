@@ -30,6 +30,7 @@ members = [
     "libs/libnyx-platform",
     "libs/grimoire-core",
     "libs/grimoire-client",
+    "libs/nyx-theme",       # Design system and theming
 
     # Init and service management
     "init",
@@ -50,6 +51,12 @@ members = [
     # "umbra",      # Shell - excluded, optional AI deps require infernum repo
     # "summoner",   # Session management - excluded, optional AI deps require infernum repo
     "herald",       # Notifications
+
+    # Next-Gen GUI Applications
+    # "nyx-shell",      # Desktop shell - excluded, requires iced 0.13
+    # "nyx-control",    # Quick settings - excluded, requires iced 0.13
+    # "nyx-assistant",  # AI command palette - excluded, requires iced 0.13
+    # "nyx-settings",   # System settings - excluded, requires iced 0.13
 
     # AI-powered agents
     "agents/guardian",   # Security policy
@@ -83,12 +90,13 @@ aarch64-cpu = "9.4"
 contracts = "0.6"
 
 # Async runtime (userspace)
-tokio = { version = "1.41", features = ["full"] }
+tokio = { version = "1.42", features = ["full"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+toml = "0.8"
 
 # Error handling
 anyhow = "1.0"
@@ -111,6 +119,17 @@ crossterm = "0.28"
 libc = "0.2"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 futures = "0.3"
+once_cell = "1.20"
+
+# GUI (for next-gen desktop)
+iced = { version = "0.13", features = ["advanced", "image", "svg", "canvas", "tokio"] }
+palette = "0.7"
+
+# System information
+sysinfo = "0.32"
+
+# Fuzzy matching
+fuzzy-matcher = "0.3"
 
 [profile.release]
 opt-level = 3
